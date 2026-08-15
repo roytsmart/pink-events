@@ -8,6 +8,7 @@ from ._rgb import rgb
 from ._candidates import Candidate, candidates
 from ._overview import overview, event
 from ._search import dim_events
+from ._network import network, distance_to
 
 __all__ = [
     "raster",
@@ -17,4 +18,6 @@ __all__ = [
     "overview",
     "event",
     "dim_events",
+    "network",
+    "distance_to",
 ]

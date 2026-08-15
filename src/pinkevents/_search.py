@@ -11,6 +11,7 @@ import named_arrays as na
 from ._observations import raster
 from ._rgb import rgb
 from ._candidates import Candidate, _background
+from ._network import network, distance_to
 from ._overview import (
     path_figures,
     band_wing,
@@ -176,6 +177,8 @@ def dim_events(
 
     image, colorbar = rgb(obs)
 
+    net = network()
+
     with astropy.visualization.quantity_support():
 
         fig = plt.figure(figsize=figsize, constrained_layout=True)
@@ -189,7 +192,7 @@ def dim_events(
         axs = grid_profiles.subplots(sharex=True, sharey=False)
         axs = np.array(axs).ravel()
 
-        _plot_image(ax_image, cax, image, colorbar, obs)
+        _plot_image(ax_image, cax, image, colorbar, obs, network=net)
 
         for i, candidate in enumerate(found):
 
@@ -232,7 +235,10 @@ def dim_events(
                 profile=profile,
                 median=median,
                 velocity_limit=velocity_limit,
-                label=f"{i + 1} ({candidate.score:.0f}$\\sigma$)",
+                label=(
+                    f"{i + 1} ({candidate.score:.0f}$" + chr(92) + "sigma$, "
+                    f"{distance_to(*net, candidate.position).value:.0f}'')"
+                ),
             )
 
         for ax in axs[len(found) :]:

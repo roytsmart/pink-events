@@ -13,6 +13,7 @@ import iris
 from ._observations import raster
 from ._rgb import rgb
 from ._candidates import Candidate, candidates, score
+from ._network import network, distance_to
 
 __all__ = [
     "overview",
@@ -147,9 +148,10 @@ def _plot_profile(
     ax.set_xlim(-velocity_limit.value, +velocity_limit.value)
     ax.text(0.03, 0.9, label, transform=ax.transAxes, fontsize=12)
     ratio = wing / continuum if continuum != 0 else np.inf
+    # Below the panel label, which can be long enough to reach it.
     ax.text(
         0.97,
-        0.9,
+        0.78,
         f"wing/continuum = {ratio:.1f}",
         transform=ax.transAxes,
         fontsize=9,
@@ -163,6 +165,7 @@ def _plot_image(
     image: na.FunctionArray,
     colorbar: na.FunctionArray,
     obs: iris.sg.SpectrographObservation,
+    network: "None | tuple" = None,
 ):
     """
     The rendered raster and the key that says what its colors mean.
@@ -180,6 +183,10 @@ def _plot_image(
     obs
         The observation the rendering was made from, for its axis names and
         rest wavelength.
+    network
+        The network mask and its coordinates, as returned by
+        :func:`pinkevents.network`, drawn as a contour over the raster so
+        that an event near the boundary can be seen to be near it.
     """
     axis_wavelength = obs.axis_wavelength
     index_time = {obs.axis_time: 0}
@@ -193,6 +200,18 @@ def _plot_image(
     ax.set_aspect("equal")
     ax.set_xlabel("helioprojective x (arcsec)")
     ax.set_ylabel("helioprojective y (arcsec)")
+
+    if network is not None:
+        mask, x, y = network
+        ax.contour(
+            x,
+            y,
+            mask.astype(float),
+            levels=[0.5],
+            colors="white",
+            linewidths=0.4,
+            alpha=0.6,
+        )
 
     wavelength_rest = na.as_named_array(obs.inputs.wavelength_rest).ndarray
     equivalency = u.doppler_optical(wavelength_rest)
@@ -486,6 +505,9 @@ def event(
     index = snapped.index
     position = snapped.position
 
+    net = network()
+    d_network = distance_to(*net, position)
+
     velocity = _velocity_centers(obs)
     median = np.nanmedian(obs.outputs, axis=(axis_time, axis_x, axis_y))
 
@@ -510,7 +532,7 @@ def event(
         cax = fig.add_subplot(grid[1])
         ax_profile = fig.add_subplot(grid[2])
 
-        _plot_image(ax_image, cax, image, colorbar, obs)
+        _plot_image(ax_image, cax, image, colorbar, obs, network=net)
 
         x = position.x.ndarray.to_value(u.arcsec)
         y = position.y.ndarray.to_value(u.arcsec)
@@ -531,7 +553,7 @@ def event(
             profile=profile,
             median=median,
             velocity_limit=velocity_limit,
-            label=f"({x:.0f}, {y:.0f})",
+            label=f"({x:.0f}, {y:.0f}), {d_network.value:.1f}'' from network",
         )
         # Away from the panel label in the top left and the ratio in the
         # top right.
