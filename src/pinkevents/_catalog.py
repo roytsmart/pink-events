@@ -21,6 +21,7 @@ from ._overview import path_figures, _plot_image
 __all__ = [
     "catalog",
     "statistics",
+    "profiles",
 ]
 
 #: How finely the magnetogram times are sampled. The field barely evolves
@@ -266,3 +267,141 @@ def statistics(
     plt.close(fig)
 
     return path
+
+
+def profiles(
+    significance_min: float = 5,
+    separation: u.Quantity = 5 * u.arcsec,
+    velocity_limit: u.Quantity = 300 * u.km / u.s,
+    halfwidth_x: int = 1,
+    halfwidth_y: int = 2,
+    num_column: int = 6,
+    num_row: int = 8,
+    dpi: float = 200,
+) -> list[pathlib.Path]:
+    """
+    The Si IV profile of every event in the census, a gallery in pages.
+
+    One small panel per event, in descending order of significance, each
+    against the median profile of the raster and stamped with the event's
+    number, significance, distance to the Mg II network, and the flux
+    density under it.
+
+    Parameters
+    ----------
+    significance_min
+        The smallest score, in standard deviations of the continuum noise,
+        counted as an event.
+    separation
+        The de-duplication radius.
+    velocity_limit
+        The Doppler velocity range of the panels.
+    halfwidth_x
+        How many raster steps on either side to average each profile over.
+    halfwidth_y
+        How many pixels along the slit on either side to average over.
+    num_column
+        The number of panels across a page.
+    num_row
+        The number of panels down a page.
+    dpi
+        The resolution of the saved pages.
+    """
+    from ._overview import _velocity_centers
+
+    table = catalog(
+        significance_min=significance_min,
+        separation=separation,
+    )
+
+    obs = raster()
+
+    axis_time = obs.axis_time
+    axis_x = obs.axis_detector_x
+    axis_y = obs.axis_detector_y
+
+    index_time = {axis_time: 0}
+
+    velocity = _velocity_centers(obs)
+    velocity = velocity.ndarray.to_value(u.km / u.s)
+    median = np.nanmedian(obs.outputs, axis=(axis_time, axis_x, axis_y))
+    median = u.Quantity(median.ndarray).value
+
+    position = obs.inputs.position[index_time].cell_centers((axis_x, axis_y))
+    px = position.x.ndarray.to_value(u.arcsec)
+    py = position.y.ndarray.to_value(u.arcsec)
+    axes_position = position.x.axes
+
+    num = len(table["sig"])
+    per_page = num_column * num_row
+    num_page = int(np.ceil(num / per_page))
+
+    path_figures.mkdir(parents=True, exist_ok=True)
+    paths = []
+
+    for page in range(num_page):
+        fig, axs = plt.subplots(
+            nrows=num_row,
+            ncols=num_column,
+            figsize=(2.6 * num_column, 1.9 * num_row),
+            sharex=True,
+            constrained_layout=True,
+        )
+        axs = np.array(axs).ravel()
+
+        for slot, ax in enumerate(axs):
+            i = page * per_page + slot
+            if i >= num:
+                ax.set_visible(False)
+                continue
+
+            # The pixel nearest the cataloged position, since the catalog
+            # keeps positions rather than indices.
+            distance = np.hypot(px - table["x"][i], py - table["y"][i])
+            index_nd = np.unravel_index(np.nanargmin(distance), distance.shape)
+            index = {ax_: int(j) for ax_, j in zip(axes_position, index_nd)}
+
+            neighborhood = {
+                axis_x: slice(
+                    max(index[axis_x] - halfwidth_x, 0),
+                    index[axis_x] + halfwidth_x + 1,
+                ),
+                axis_y: slice(
+                    max(index[axis_y] - halfwidth_y, 0),
+                    index[axis_y] + halfwidth_y + 1,
+                ),
+            }
+            profile = obs.outputs[index_time | neighborhood].mean((axis_x, axis_y))
+            profile = u.Quantity(profile.ndarray).value
+
+            ax.plot(velocity, median, color="gray", linewidth=0.8)
+            ax.plot(velocity, profile, color="tab:red", linewidth=0.8)
+            ax.axvline(0, color="black", linewidth=0.4, linestyle="dashed")
+            ax.set_xlim(-velocity_limit.value, +velocity_limit.value)
+            ax.tick_params(labelsize=6)
+            ax.text(
+                0.03,
+                0.83,
+                f"{i + 1}: {table['sig'][i]:.0f}$\sigma$",
+                transform=ax.transAxes,
+                fontsize=7,
+            )
+            ax.text(
+                0.97,
+                0.83,
+                f"{table['d_network'][i]:.0f}'', {table['field'][i]:.1f} G",
+                transform=ax.transAxes,
+                fontsize=6,
+                horizontalalignment="right",
+            )
+
+        for ax in axs[-num_column:]:
+            if ax.get_visible():
+                ax.set_xlabel("LOS velocity (km/s)", fontsize=7)
+
+        path = path_figures / f"profiles_{page + 1}.png"
+        fig.savefig(path, dpi=dpi)
+        plt.close(fig)
+        paths.append(path)
+
+    return paths

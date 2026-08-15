@@ -10,7 +10,7 @@ from ._overview import overview, event
 from ._search import dim_events
 from ._network import network, distance_to
 from ._magnetic import flux_density
-from ._catalog import catalog, statistics
+from ._catalog import catalog, statistics, profiles
 
 __all__ = [
     "raster",
@@ -25,4 +25,5 @@ __all__ = [
     "flux_density",
     "catalog",
     "statistics",
+    "profiles",
 ]
