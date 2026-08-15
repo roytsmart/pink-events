@@ -10,6 +10,7 @@ import named_arrays as na
 __all__ = [
     "Candidate",
     "candidates",
+    "score",
 ]
 
 
@@ -65,17 +66,15 @@ def _background(
     return box(total) / np.maximum(box(finite.astype(float)), 1), coverage
 
 
-def candidates(
+def score(
     image: na.FunctionArray,
     axis_rgb: str,
     axis_x: str,
     axis_y: str,
     halfwidth_background: u.Quantity = 4 * u.arcsec,
-    num: int = 6,
-    separation: u.Quantity = 10 * u.arcsec,
-) -> list[Candidate]:
+) -> tuple[na.AbstractScalarArray, na.Cartesian2dVectorArray]:
     """
-    The pixels most pinker than their own neighborhoods, in the dark lanes.
+    How much pinker than its own neighborhood every pixel is.
 
     The rendered raster is pink nearly everywhere, since the continuum under
     the line integrates to a magenta veil, so pink in an absolute sense
@@ -84,7 +83,9 @@ def candidates(
     is therefore compared to a local boxcar background: its score is how
     much its red and blue channels rise above that background together,
     beyond what its green channel does, and pixels whose background is
-    brighter than typical, the network, are excluded.
+    brighter than typical, the network, score nothing.
+
+    Returns the score and the position of each pixel.
 
     Parameters
     ----------
@@ -98,11 +99,6 @@ def candidates(
         The logical axis along the slit.
     halfwidth_background
         The half-width of the neighborhood a pixel is compared against.
-    num
-        The number of candidates to keep.
-    separation
-        The minimum distance between the candidates kept, so that one event
-        does not use up the whole list.
     """
     rgb = image.outputs
 
@@ -132,37 +128,78 @@ def candidates(
     r, g, b = excess
     # Pink is red and blue rising together beyond green: the lesser of the
     # two wings, less the core, so that a plain brightening scores nothing.
-    score = np.minimum(r, b) - g
+    result = np.minimum(r, b) - g
 
     # Only the dark lanes: a pixel whose surroundings are brighter than the
     # typical neighborhood is in or beside the network, which is not where
     # these events were noticed.
     luminance = background.mean(0)
-    score = np.where(luminance < np.median(luminance), score, 0)
+    result = np.where(luminance < np.median(luminance), result, 0)
 
     # Only where the whole neighborhood is really there. The detector edges
     # and the data-gap columns leave the background computed from a sliver,
     # and a pixel beats a sliver too easily to mean anything.
-    score = np.where(coverage.min(0) > 0.99, score, 0)
-    score[..., : 2 * hx + 1, :] = 0
-    score[..., -(2 * hx + 1) :, :] = 0
-    score[..., :, : 2 * hy + 1] = 0
-    score[..., :, -(2 * hy + 1) :] = 0
+    result = np.where(coverage.min(0) > 0.99, result, 0)
+    result[..., : 2 * hx + 1, :] = 0
+    result[..., -(2 * hx + 1) :, :] = 0
+    result[..., :, : 2 * hy + 1] = 0
+    result[..., :, -(2 * hy + 1) :] = 0
 
     axes_spatial = tuple(ax for ax in rgb.axes if ax != axis_rgb)
     axes_moved = tuple(ax for ax in axes_spatial if ax not in (axis_x, axis_y))
     axes_moved = axes_moved + (axis_x, axis_y)
-    score = na.ScalarArray(score, axes=axes_moved)
+    result = na.ScalarArray(result, axes=axes_moved)
 
-    order = np.argsort(-score.ndarray, axis=None)
+    return result, position
+
+
+def candidates(
+    image: na.FunctionArray,
+    axis_rgb: str,
+    axis_x: str,
+    axis_y: str,
+    halfwidth_background: u.Quantity = 4 * u.arcsec,
+    num: int = 6,
+    separation: u.Quantity = 10 * u.arcsec,
+) -> list[Candidate]:
+    """
+    The pixels most pinker than their own neighborhoods, in the dark lanes.
+
+    Parameters
+    ----------
+    image
+        The rendered raster, as returned by :func:`pinkevents.rgb`.
+    axis_rgb
+        The logical axis of length three carrying the color channels.
+    axis_x
+        The logical axis of the raster steps.
+    axis_y
+        The logical axis along the slit.
+    halfwidth_background
+        The half-width of the neighborhood a pixel is compared against.
+    num
+        The number of candidates to keep.
+    separation
+        The minimum distance between the candidates kept, so that one event
+        does not use up the whole list.
+    """
+    pinkness, position = score(
+        image=image,
+        axis_rgb=axis_rgb,
+        axis_x=axis_x,
+        axis_y=axis_y,
+        halfwidth_background=halfwidth_background,
+    )
+
+    order = np.argsort(-pinkness.ndarray, axis=None)
 
     result = []
     for flat in order:
         if len(result) >= num:
             break
-        index_nd = np.unravel_index(flat, score.ndarray.shape)
-        index = {ax: int(i) for ax, i in zip(score.axes, index_nd)}
-        if score[index].ndarray <= 0:
+        index_nd = np.unravel_index(flat, pinkness.ndarray.shape)
+        index = {ax: int(i) for ax, i in zip(pinkness.axes, index_nd)}
+        if pinkness[index].ndarray <= 0:
             break
         here = position[{ax: index[ax] for ax in position.shape}]
         if any((here - c.position).length < separation for c in result):
@@ -171,7 +208,7 @@ def candidates(
             Candidate(
                 index=index,
                 position=here,
-                score=float(score[index].ndarray),
+                score=float(pinkness[index].ndarray),
             )
         )
 

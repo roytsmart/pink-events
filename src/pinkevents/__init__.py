@@ -6,7 +6,7 @@ cell interiors of an IRIS raster.
 from ._observations import raster
 from ._rgb import rgb
 from ._candidates import Candidate, candidates
-from ._overview import overview
+from ._overview import overview, event
 
 __all__ = [
     "raster",
@@ -14,4 +14,5 @@ __all__ = [
     "Candidate",
     "candidates",
     "overview",
+    "event",
 ]
