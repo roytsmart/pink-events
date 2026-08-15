@@ -7,7 +7,7 @@ name = "pink-events"
 authors = [
     {name = "Roy T. Smart", email = "roytsmart@gmail.com"},
 ]
-description = "An investigation of the small, dim, pink events in the supergranule cell interiors of the ESIS level-4 inversions."
+description = "An investigation of the small, dim, pink events in the supergranule cell interiors of an IRIS raster."
 readme = "readme.md"
 requires-python = ">=3.12"
 classifiers = [
@@ -21,9 +21,6 @@ dependencies = [
     "named-arrays",
     "colorsynth",
     "interface-region-imaging-spectrograph",
-    "euv-snapshot-imaging-spectrograph",
-    "solar-dynamics-observatory",
-    "spd-2026",
 ]
 dynamic = ["version"]
 
