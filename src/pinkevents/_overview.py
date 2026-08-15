@@ -12,7 +12,7 @@ import named_arrays as na
 import iris
 from ._observations import raster
 from ._rgb import rgb
-from ._candidates import candidates, score
+from ._candidates import Candidate, candidates, score
 
 __all__ = [
     "overview",
@@ -21,6 +21,13 @@ __all__ = [
 
 #: Where the figures land. Not committed; the code that makes them is.
 path_figures = pathlib.Path(__file__).parent.parent.parent / "figures"
+
+#: The event this investigation keeps coming back to, the small pink patch
+#: in the dark lane near (275, -146) arcsec.
+position_event_default = na.Cartesian2dVectorArray(
+    x=275 * u.arcsec,
+    y=-146 * u.arcsec,
+)
 
 #: The velocity band treated as the line wings.
 band_wing = (40, 150) * (u.km / u.s)
@@ -207,7 +214,68 @@ def _plot_image(
     cax.tick_params(labelsize=8)
 
 
+def _snap(
+    obs: iris.sg.SpectrographObservation,
+    image: na.FunctionArray,
+    position: na.Cartesian2dVectorArray,
+    snap: u.Quantity,
+) -> Candidate:
+    """
+    The pinkest pixel near a position named by eye.
+
+    A position read off an image by eye lands beside the event as easily as
+    on it, and the exact pixel named can be a dark hole while the event
+    glows an arcsecond away.
+
+    Parameters
+    ----------
+    obs
+        The observation the rendering was made from.
+    image
+        The rendered raster, as returned by :func:`pinkevents.rgb`.
+    position
+        The position named.
+    snap
+        How far from the named position the event may actually be.
+        Zero keeps the named position exactly.
+    """
+    axis_time = obs.axis_time
+    axis_x = obs.axis_detector_x
+    axis_y = obs.axis_detector_y
+
+    index_time = {axis_time: 0}
+
+    pinkness, centers = score(
+        image=image,
+        axis_rgb=obs.axis_wavelength,
+        axis_x=axis_x,
+        axis_y=axis_y,
+    )
+    pinkness = pinkness[index_time]
+    centers = centers[index_time] if axis_time in centers.shape else centers
+
+    distance = (centers - position).length
+
+    if snap > 0:
+        best = np.argmax(np.where(distance < snap, pinkness, 0))
+    else:
+        best = np.argmin(distance)
+
+    index = {
+        axis_x: int(best[axis_x].ndarray),
+        axis_y: int(best[axis_y].ndarray),
+    }
+
+    return Candidate(
+        index=index,
+        position=centers[index],
+        score=float(pinkness[index].ndarray),
+    )
+
+
 def overview(
+    events: None | list[na.Cartesian2dVectorArray] = None,
+    snap: u.Quantity = 5 * u.arcsec,
     velocity_limit: u.Quantity = 400 * u.km / u.s,
     num: int = 6,
     halfwidth_x: int = 1,
@@ -229,13 +297,20 @@ def overview(
 
     Parameters
     ----------
+    events
+        Positions to show whatever the detection thinks of them, occupying
+        the first panels. The default is the event near (275, -146). The
+        pinkest pixel within `snap` of each is the one shown.
+    snap
+        How far from a named position its event may actually be.
     velocity_limit
         The Doppler velocity range of the profile panels. Wide enough by
         default to show the blended lines near -200 and -100 km/s, which
         are present in every profile including the median and are not
         Doppler shifts.
     num
-        The number of candidates to show.
+        The number of panels, the named events and then the strongest
+        detections, no two of them close together.
     halfwidth_x
         How many raster steps on either side of a candidate to average over,
         to knock the noise down without smearing a small event away.
@@ -255,13 +330,26 @@ def overview(
 
     image, colorbar = rgb(obs)
 
+    if events is None:
+        events = [position_event_default]
+
+    pinned = [_snap(obs, image, position, snap) for position in events]
+
+    separation = 10 * u.arcsec
     found = candidates(
         image=image,
         axis_rgb=axis_wavelength,
         axis_x=axis_x,
         axis_y=axis_y,
         num=num,
+        separation=separation,
     )
+    found = [
+        c
+        for c in found
+        if all((c.position - p.position).length > separation for p in pinned)
+    ]
+    found = pinned + found[: num - len(pinned)]
 
     velocity = _velocity_centers(obs)
 
@@ -361,7 +449,7 @@ def event(
     ----------
     position
         The helioprojective position of the event. The default is the small
-        pink event near (275, -140) arcsec.
+        pink event near (275, -146) arcsec.
     snap
         How far from the given position the event may actually be: the
         pinkest pixel within this distance is the one shown, since a
@@ -382,15 +470,11 @@ def event(
         The resolution of the saved figure.
     """
     if position is None:
-        position = na.Cartesian2dVectorArray(
-            x=275 * u.arcsec,
-            y=-140 * u.arcsec,
-        )
+        position = position_event_default
 
     obs = raster()
 
     axis_time = obs.axis_time
-    axis_wavelength = obs.axis_wavelength
     axis_x = obs.axis_detector_x
     axis_y = obs.axis_detector_y
 
@@ -398,29 +482,9 @@ def event(
 
     index_time = {axis_time: 0}
 
-    pinkness, centers = score(
-        image=image,
-        axis_rgb=axis_wavelength,
-        axis_x=axis_x,
-        axis_y=axis_y,
-    )
-    pinkness = pinkness[index_time]
-    centers = centers[index_time] if axis_time in centers.shape else centers
-
-    distance = (centers - position).length
-
-    if snap > 0:
-        # The pinkest pixel near the position named, rather than the pixel
-        # at it.
-        best = np.argmax(np.where(distance < snap, pinkness, 0))
-    else:
-        best = np.argmin(distance)
-
-    index = {
-        axis_x: int(best[axis_x].ndarray),
-        axis_y: int(best[axis_y].ndarray),
-    }
-    position = centers[index]
+    snapped = _snap(obs, image, position, snap)
+    index = snapped.index
+    position = snapped.position
 
     velocity = _velocity_centers(obs)
     median = np.nanmedian(obs.outputs, axis=(axis_time, axis_x, axis_y))
@@ -469,7 +533,9 @@ def event(
             velocity_limit=velocity_limit,
             label=f"({x:.0f}, {y:.0f})",
         )
-        ax_profile.legend(fontsize=8)
+        # Away from the panel label in the top left and the ratio in the
+        # top right.
+        ax_profile.legend(fontsize=8, loc="center right")
         ax_profile.set_xlabel(f"LOS velocity ({velocity_limit.unit:latex_inline})")
 
     path_figures.mkdir(parents=True, exist_ok=True)
