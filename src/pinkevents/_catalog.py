@@ -196,7 +196,7 @@ def statistics(
     significance_min: float = 5,
     separation: u.Quantity = 5 * u.arcsec,
     figsize: tuple[float, float] = (16, 8),
-    dpi: float = 300,
+    dpi: float = 600,
 ) -> pathlib.Path:
     """
     The census of explosive events and their magnetic context.
