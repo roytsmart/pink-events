@@ -277,9 +277,13 @@ def _snap(
 
     distance = (centers - position).length
 
-    if snap > 0:
-        best = np.argmax(np.where(distance < snap, pinkness, 0))
+    nearby = np.where(distance < snap, pinkness, 0)
+    if snap > 0 and np.any(nearby > 0):
+        best = np.argmax(nearby)
     else:
+        # Nothing pink within reach, so the named position itself: the
+        # highest of a field of zeros would be the first corner of the
+        # raster, nowhere near what was asked about.
         best = np.argmin(distance)
 
     index = {
