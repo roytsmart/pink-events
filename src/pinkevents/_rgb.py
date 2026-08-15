@@ -79,15 +79,14 @@ def rgb(
         axis=axis_orthogonal,
     )
 
-    # Computed here rather than left to :func:`colorsynth.rgb`, which would
-    # take the minimum over whatever it is handed: each chunk would be
-    # normalized against its own minimum, painting a seam at every chunk
-    # boundary, and the colorbar, which sees the whole raster, would
-    # describe none of them.
-    spd_min = np.nanmin(
-        obs.outputs,
-        axis=axis_orthogonal,
-    )
+    # Zero, the way `SpectrographObservation.show` pins it, and passed
+    # explicitly so that every chunk and the colorbar are normalized alike:
+    # left to :func:`colorsynth.rgb`, the floor would be the minimum of
+    # whatever it is handed, which paints a seam at every chunk boundary,
+    # and the despiked radiance reaches a hundred thousand below zero in the
+    # noise, which put the zero level at four fifths of the brightness scale
+    # and washed the whole raster pale.
+    spd_min = 0 * na.unit(obs.outputs)
 
     num_x = obs.outputs.shape[axis_x]
     chunks = []

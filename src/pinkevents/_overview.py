@@ -21,7 +21,7 @@ path_figures = pathlib.Path(__file__).parent.parent.parent / "figures"
 
 
 def overview(
-    velocity_limit: u.Quantity = 250 * u.km / u.s,
+    velocity_limit: u.Quantity = 400 * u.km / u.s,
     num: int = 6,
     halfwidth_x: int = 1,
     halfwidth_y: int = 2,
@@ -40,7 +40,9 @@ def overview(
     Parameters
     ----------
     velocity_limit
-        The Doppler velocity range of the profile panels.
+        The Doppler velocity range of the profile panels. Wide enough by
+        default to show the blended line near -200 km/s, which is present
+        in every profile including the median and is not a Doppler shift.
     num
         The number of candidates to show.
     halfwidth_x
