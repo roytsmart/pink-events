@@ -134,13 +134,18 @@ def score_maps(
     wing_red = band_mean(excess, where_red) - continuum
 
     # How big an excess has to be before it means anything, from the scatter
-    # of the one band that should hold nothing.
+    # of the one band that should hold nothing. The band statistic is a
+    # median, and the median of N samples is sqrt(pi/2) noisier than their
+    # mean: without that factor every significance in the census was a
+    # quarter optimistic, and at five sigma over four hundred thousand
+    # pixels a quarter is the difference between a census and a noise
+    # catalog, which a deficit control made plain.
     noise = np.nanstd(
         np.where(where_continuum, excess - continuum, np.nan),
         axis=axis_wavelength,
     )
     num_wing = int(np.sum(where_blue).ndarray)
-    noise = noise / np.sqrt(num_wing)
+    noise = np.sqrt(np.pi / 2) * noise / np.sqrt(num_wing)
 
     core = band_mean(obs.outputs, speed < band_core)
 

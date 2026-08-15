@@ -73,22 +73,40 @@ def _catalog(
 
     net = network()
 
-    order = np.argsort(-np.nan_to_num(significance.ndarray), axis=None)
+    def census(sig_map: np.ndarray) -> list[dict]:
+        """The greedy champion walk, on whatever significance map."""
+        order = np.argsort(-np.nan_to_num(sig_map), axis=None)
+        kept = []
+        for flat in order:
+            index_nd = np.unravel_index(flat, sig_map.shape)
+            index = {ax: int(i) for ax, i in zip(significance.axes, index_nd)}
+            sig = float(sig_map[index_nd])
+            if not np.isfinite(sig) or sig < significance_min:
+                break
+            here = position[index]
+            x = float(here.x.ndarray.to_value(u.arcsec))
+            y = float(here.y.ndarray.to_value(u.arcsec))
+            if not (np.isfinite(x) and np.isfinite(y)):
+                continue
+            if any(np.hypot(x - e["x"], y - e["y"]) < separation for e in kept):
+                continue
+            kept.append({"x": x, "y": y, "sig": sig, "index": index})
+        return kept
+
+    sig_blue_map = u.Quantity(significance_blue.ndarray).value
+    sig_red_map = u.Quantity(significance_red.ndarray).value
+
+    # The false discovery rate, measured rather than assumed: the same
+    # detector walked over the wing deficits, which no real event produces,
+    # counts what noise and systematics alone put over the floor.
+    num_deficit = len(census(np.maximum(-sig_blue_map, -sig_red_map)))
 
     events = []
-    for flat in order:
-        index_nd = np.unravel_index(flat, significance.ndarray.shape)
-        index = {ax: int(i) for ax, i in zip(significance.axes, index_nd)}
-        sig = float(u.Quantity(significance[index].ndarray).value)
-        if not np.isfinite(sig) or sig < significance_min:
-            break
-        here = position[index]
-        x = float(here.x.ndarray.to_value(u.arcsec))
-        y = float(here.y.ndarray.to_value(u.arcsec))
-        if not (np.isfinite(x) and np.isfinite(y)):
-            continue
-        if any(np.hypot(x - e["x"], y - e["y"]) < separation for e in events):
-            continue
+    for found in census(u.Quantity(significance.ndarray).value):
+        index = found["index"]
+        x = found["x"]
+        y = found["y"]
+        sig = found["sig"]
         moment = obs.inputs.time[{axis_time: 0, axis_x: index[axis_x]}].ndarray
         jd = float(astropy.time.Time(moment).jd)
 
@@ -148,6 +166,7 @@ def _catalog(
         control.append({"x": x, "y": y, "field": field, "d_network": d})
 
     return {
+        "num_deficit": np.array(num_deficit),
         "x": np.array([e["x"] for e in events]),
         "y": np.array([e["y"] for e in events]),
         "sig": np.array([e["sig"] for e in events]),
@@ -163,7 +182,7 @@ def _catalog(
 
 
 def catalog(
-    significance_min: float = 5,
+    significance_min: float = 7,
     separation: u.Quantity = 5 * u.arcsec,
 ) -> dict[str, npt.NDArray]:
     """
@@ -193,7 +212,7 @@ def catalog(
 
 
 def statistics(
-    significance_min: float = 5,
+    significance_min: float = 7,
     separation: u.Quantity = 5 * u.arcsec,
     figsize: tuple[float, float] = (16, 8),
     dpi: float = 600,
@@ -258,8 +277,10 @@ def statistics(
                 label=f"{names[direction]} ({where.sum()})",
             )
         ax_image.legend(fontsize=7, loc="lower left")
+        fdr = float(table["num_deficit"]) / max(num, 1)
         ax_image.set_title(
-            f"{num} events at {significance_min}$\\sigma$ or better",
+            f"{num} events at {significance_min}$\\sigma$ or better, "
+            f"measured FDR $\\approx$ {fdr * 100:.0f}%",
             fontsize=10,
         )
 
@@ -301,7 +322,7 @@ def statistics(
 
 
 def profiles(
-    significance_min: float = 5,
+    significance_min: float = 7,
     separation: u.Quantity = 5 * u.arcsec,
     velocity_limit: u.Quantity = 300 * u.km / u.s,
     halfwidth_x: int = 1,
