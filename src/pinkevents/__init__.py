@@ -7,6 +7,7 @@ from ._observations import raster
 from ._rgb import rgb
 from ._candidates import Candidate, candidates
 from ._overview import overview, event
+from ._search import dim_events
 
 __all__ = [
     "raster",
@@ -15,4 +16,5 @@ __all__ = [
     "candidates",
     "overview",
     "event",
+    "dim_events",
 ]
