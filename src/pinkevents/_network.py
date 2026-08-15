@@ -175,6 +175,8 @@ def distance_to(
     position
         The position being asked about.
     """
-    dx = x[mask] - position.x.ndarray.to_value(u.arcsec)
-    dy = y[mask] - position.y.ndarray.to_value(u.arcsec)
+    x0 = float(na.as_named_array(position.x).ndarray.to_value(u.arcsec))
+    y0 = float(na.as_named_array(position.y).ndarray.to_value(u.arcsec))
+    dx = x[mask] - x0
+    dy = y[mask] - y0
     return np.sqrt(np.min(np.square(dx) + np.square(dy))) * u.arcsec

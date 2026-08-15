@@ -9,6 +9,7 @@ import astropy.units as u
 import astropy.visualization
 import astropy.time
 import named_arrays as na
+import iris
 from ._observations import raster
 from ._rgb import rgb
 from ._candidates import Candidate, _background
@@ -29,6 +30,69 @@ __all__ = [
 
 #: The velocity band treated as the line core.
 band_core = 30 * u.km / u.s
+
+
+def score_maps(
+    obs: iris.sg.SpectrographObservation,
+) -> tuple[na.AbstractScalar, na.AbstractScalar, na.AbstractScalar]:
+    """
+    How much every pixel's spectrum stands above the median in both wings.
+
+    Returns the score, its significance in standard deviations of the
+    continuum noise, and the line-core brightness. The score is the lesser
+    of the two wing excesses less the continuum excess, so a continuum
+    brightening scores nothing, a one-sided noise excursion scores nothing,
+    and the blends, which live only on the blue side, cannot lift a pixel
+    on their own.
+
+    Parameters
+    ----------
+    obs
+        The observation to score, as returned by :func:`pinkevents.raster`.
+    """
+    axis_time = obs.axis_time
+    axis_wavelength = obs.axis_wavelength
+    axis_x = obs.axis_detector_x
+    axis_y = obs.axis_detector_y
+
+    velocity = _velocity_centers(obs)
+    median = np.nanmedian(obs.outputs, axis=(axis_time, axis_x, axis_y))
+    excess = obs.outputs - median
+
+    speed = np.abs(velocity)
+
+    # Medians rather than means, so that a single bad sample in a band, and
+    # the despiked data still holds deep negative ones, cannot drag the
+    # band. A negative artifact in the continuum band of a plain pixel
+    # pulls its continuum excess down and hands it a score it did not earn.
+    def band_mean(a: na.AbstractScalar, where: na.AbstractScalar) -> na.AbstractScalar:
+        return np.nanmedian(
+            np.where(where, a, np.nan),
+            axis=axis_wavelength,
+        )
+
+    where_blue = (band_wing[0] < speed) & (speed < band_wing[1]) & (velocity < 0)
+    where_red = (band_wing[0] < speed) & (speed < band_wing[1]) & (velocity > 0)
+    where_continuum = (band_continuum[0] < velocity) & (velocity < band_continuum[1])
+
+    wing_blue = band_mean(excess, where_blue)
+    wing_red = band_mean(excess, where_red)
+    continuum = band_mean(excess, where_continuum)
+
+    score = np.minimum(wing_blue, wing_red) - continuum
+
+    # How big the score has to be before it means anything, from the scatter
+    # of the one band that should hold nothing.
+    noise = np.nanstd(
+        np.where(where_continuum, excess - continuum, np.nan),
+        axis=axis_wavelength,
+    )
+    num_wing = int(np.sum(where_blue).ndarray)
+    significance = score / (noise / np.sqrt(num_wing))
+
+    core = band_mean(obs.outputs, speed < band_core)
+
+    return score, significance, core
 
 
 def dim_events(
@@ -82,51 +146,15 @@ def dim_events(
     obs = raster()
 
     axis_time = obs.axis_time
-    axis_wavelength = obs.axis_wavelength
     axis_x = obs.axis_detector_x
     axis_y = obs.axis_detector_y
 
     index_time = {axis_time: 0}
 
+    score, significance, core = score_maps(obs)
+
     velocity = _velocity_centers(obs)
     median = np.nanmedian(obs.outputs, axis=(axis_time, axis_x, axis_y))
-    excess = obs.outputs - median
-
-    speed = np.abs(velocity)
-
-    # Medians rather than means, so that a single bad sample in a band, and
-    # the despiked data still holds deep negative ones, cannot drag the
-    # band. A negative artifact in the continuum band of a plain pixel
-    # pulls its continuum excess down and hands it a score it did not earn.
-    def band_mean(a: na.AbstractScalar, where: na.AbstractScalar) -> na.AbstractScalar:
-        return np.nanmedian(
-            np.where(where, a, np.nan),
-            axis=axis_wavelength,
-        )
-
-    where_blue = (band_wing[0] < speed) & (speed < band_wing[1]) & (velocity < 0)
-    where_red = (band_wing[0] < speed) & (speed < band_wing[1]) & (velocity > 0)
-    where_continuum = (band_continuum[0] < velocity) & (velocity < band_continuum[1])
-
-    wing_blue = band_mean(excess, where_blue)
-    wing_red = band_mean(excess, where_red)
-    continuum = band_mean(excess, where_continuum)
-
-    score = np.minimum(wing_blue, wing_red) - continuum
-
-    # How big the score has to be before it means anything, from the scatter
-    # of the one band that should hold nothing.
-    noise = np.nanstd(
-        np.where(where_continuum, excess - continuum, np.nan),
-        axis=axis_wavelength,
-    )
-    num_wing = int(np.sum(where_blue).ndarray)
-    significance = score / (noise / np.sqrt(num_wing))
-
-    # What is network and what is cell interior, decided by the line core of
-    # the neighborhood rather than by this pixel, so that a compact event
-    # does not disqualify itself by being bright.
-    core = band_mean(obs.outputs, speed < band_core)
 
     position = obs.inputs.position[index_time].cell_centers((axis_x, axis_y))
     scale_x = np.nanmean(np.abs(np.diff(position.x, axis=axis_x))).ndarray
