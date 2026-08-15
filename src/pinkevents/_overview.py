@@ -7,6 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.axes
 import astropy.units as u
+import astropy.time
 import astropy.visualization
 import named_arrays as na
 import iris
@@ -14,6 +15,7 @@ from ._observations import raster
 from ._rgb import rgb
 from ._candidates import Candidate, candidates, score
 from ._network import network, distance_to
+from ._magnetic import flux_density
 
 __all__ = [
     "overview",
@@ -508,6 +510,12 @@ def event(
     net = network()
     d_network = distance_to(*net, position)
 
+    time_event = astropy.time.Time(
+        obs.inputs.time[{axis_time: 0, axis_x: index[axis_x]}].ndarray,
+        format="jd",
+    )
+    field = flux_density(position, time_event)
+
     velocity = _velocity_centers(obs)
     median = np.nanmedian(obs.outputs, axis=(axis_time, axis_x, axis_y))
 
@@ -553,7 +561,10 @@ def event(
             profile=profile,
             median=median,
             velocity_limit=velocity_limit,
-            label=f"({x:.0f}, {y:.0f}), {d_network.value:.1f}'' from network",
+            label=(
+                f"({x:.0f}, {y:.0f}), {d_network.value:.1f}'' from network, "
+                f"{field.value:.1f} G"
+            ),
         )
         # Away from the panel label in the top left and the ratio in the
         # top right.

@@ -9,6 +9,7 @@ from ._candidates import Candidate, candidates
 from ._overview import overview, event
 from ._search import dim_events
 from ._network import network, distance_to
+from ._magnetic import flux_density
 
 __all__ = [
     "raster",
@@ -20,4 +21,5 @@ __all__ = [
     "dim_events",
     "network",
     "distance_to",
+    "flux_density",
 ]

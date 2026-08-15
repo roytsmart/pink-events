@@ -7,11 +7,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import astropy.units as u
 import astropy.visualization
+import astropy.time
 import named_arrays as na
 from ._observations import raster
 from ._rgb import rgb
 from ._candidates import Candidate, _background
 from ._network import network, distance_to
+from ._magnetic import flux_density
 from ._overview import (
     path_figures,
     band_wing,
@@ -179,6 +181,11 @@ def dim_events(
 
     net = network()
 
+    def time_of(candidate: Candidate) -> astropy.time.Time:
+        """The moment the slit crossed this event."""
+        index_step = {axis_time: 0, axis_x: candidate.index[axis_x]}
+        return astropy.time.Time(obs.inputs.time[index_step].ndarray, format="jd")
+
     with astropy.visualization.quantity_support():
 
         fig = plt.figure(figsize=figsize, constrained_layout=True)
@@ -237,7 +244,8 @@ def dim_events(
                 velocity_limit=velocity_limit,
                 label=(
                     f"{i + 1} ({candidate.score:.0f}$" + chr(92) + "sigma$, "
-                    f"{distance_to(*net, candidate.position).value:.0f}'')"
+                    f"{distance_to(*net, candidate.position).value:.0f}'', "
+                    f"{flux_density(candidate.position, time_of(candidate)).value:.1f} G)"
                 ),
             )
 
