@@ -64,9 +64,10 @@ def _catalog(
 
     index_time = {axis_time: 0}
 
-    score, significance, _ = score_maps(obs)
-    score = score[index_time]
-    significance = significance[index_time]
+    maps = score_maps(obs)
+    significance = maps.significance_any[index_time]
+    significance_blue = maps.significance_blue[index_time]
+    significance_red = maps.significance_red[index_time]
 
     position = obs.inputs.position[index_time].cell_centers((axis_x, axis_y))
 
@@ -81,8 +82,6 @@ def _catalog(
         sig = float(u.Quantity(significance[index].ndarray).value)
         if not np.isfinite(sig) or sig < significance_min:
             break
-        if float(u.Quantity(score[index].ndarray).value) <= 0:
-            continue
         here = position[index]
         x = float(here.x.ndarray.to_value(u.arcsec))
         y = float(here.y.ndarray.to_value(u.arcsec))
@@ -92,7 +91,30 @@ def _catalog(
             continue
         moment = obs.inputs.time[{axis_time: 0, axis_x: index[axis_x]}].ndarray
         jd = float(astropy.time.Time(moment).jd)
-        events.append({"x": x, "y": y, "sig": sig, "jd": jd, "index_x": index[axis_x]})
+
+        # Which way the event flows: both wings clearing the floor is
+        # bidirectional, otherwise the event belongs to its stronger wing.
+        sig_blue = float(u.Quantity(significance_blue[index].ndarray).value)
+        sig_red = float(u.Quantity(significance_red[index].ndarray).value)
+        if min(sig_blue, sig_red) >= significance_min:
+            direction = 0
+        elif sig_blue > sig_red:
+            direction = -1
+        else:
+            direction = +1
+
+        events.append(
+            {
+                "x": x,
+                "y": y,
+                "sig": sig,
+                "sig_blue": sig_blue,
+                "sig_red": sig_red,
+                "direction": direction,
+                "jd": jd,
+                "index_x": index[axis_x],
+            }
+        )
 
     def sample(x: float, y: float, jd: float) -> tuple[float, float]:
         here = na.Cartesian2dVectorArray(x=x * u.arcsec, y=y * u.arcsec)
@@ -129,6 +151,9 @@ def _catalog(
         "x": np.array([e["x"] for e in events]),
         "y": np.array([e["y"] for e in events]),
         "sig": np.array([e["sig"] for e in events]),
+        "sig_blue": np.array([e["sig_blue"] for e in events]),
+        "sig_red": np.array([e["sig_red"] for e in events]),
+        "direction": np.array([e["direction"] for e in events]),
         "jd": np.array([e["jd"] for e in events]),
         "field": np.array([e["field"] for e in events]),
         "d_network": np.array([e["d_network"] for e in events]),
@@ -219,14 +244,20 @@ def statistics(
         axs = grid_panels.subplots()
 
         _plot_image(ax_image, cax, image, colorbar, obs, network=net)
-        ax_image.scatter(
-            table["x"],
-            table["y"],
-            s=30,
-            facecolors="none",
-            edgecolors="white",
-            linewidths=0.6,
-        )
+        colors = {0: "white", -1: "deepskyblue", +1: "orangered"}
+        names = {0: "bidirectional", -1: "blue jet", +1: "red jet"}
+        for direction, color in colors.items():
+            where = table["direction"] == direction
+            ax_image.scatter(
+                table["x"][where],
+                table["y"][where],
+                s=30,
+                facecolors="none",
+                edgecolors=color,
+                linewidths=0.6,
+                label=f"{names[direction]} ({where.sum()})",
+            )
+        ax_image.legend(fontsize=7, loc="lower left")
         ax_image.set_title(
             f"{num} events at {significance_min}$\\sigma$ or better",
             fontsize=10,
@@ -379,10 +410,12 @@ def profiles(
             ax.axvline(0, color="black", linewidth=0.4, linestyle="dashed")
             ax.set_xlim(-velocity_limit.value, +velocity_limit.value)
             ax.tick_params(labelsize=6)
+            arrow = {0: "$\\leftrightarrow$", -1: "$\\leftarrow$", 1: "$\\rightarrow$"}
             ax.text(
                 0.03,
                 0.83,
-                f"{i + 1}: {table['sig'][i]:.0f}$\sigma$",
+                f"{i + 1}{arrow[int(table['direction'][i])]}: "
+                f"{table['sig'][i]:.0f}$\\sigma$",
                 transform=ax.transAxes,
                 fontsize=7,
             )

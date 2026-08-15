@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import matplotlib.axes
 import astropy.units as u
 import astropy.time
+import astropy.constants
 import astropy.visualization
 import named_arrays as na
 import iris
@@ -32,8 +33,30 @@ position_event_default = na.Cartesian2dVectorArray(
     y=-146 * u.arcsec,
 )
 
-#: The velocity band treated as the line wings.
-band_wing = (40, 150) * (u.km / u.s)
+#: The temperature Si IV forms at.
+temperature_si_iv = 10**4.9 * u.K
+
+#: The sound speed at the Si IV formation temperature, for a fully ionized
+#: plasma with a mean molecular weight of 0.6.
+speed_sound = np.sqrt(
+    (5 / 3) * astropy.constants.k_B * temperature_si_iv / (0.6 * astropy.constants.m_p)
+).to(u.km / u.s)
+
+#: The one-dimensional thermal speed of the Si IV ion at its formation
+#: temperature. Silicon is heavy, so this is small, which is what makes
+#: Si IV a good velocity diagnostic.
+speed_thermal = np.sqrt(
+    astropy.constants.k_B * temperature_si_iv / (28.085 * astropy.constants.u)
+).to(u.km / u.s)
+
+#: The velocity band treated as the line wings: from the slowest emission
+#: that is certainly supersonic, the sound speed plus twice the thermal
+#: speed of the ion, out to the classic explosive-event jet scale. Everything
+#: in the band is bulk flow beyond any thermal excuse.
+band_wing = (
+    speed_sound + 2 * speed_thermal,
+    150 * u.km / u.s,
+)
 
 #: The velocity band treated as pure continuum, beyond the wings and the
 #: blends near -200 and -100 km/s. Only the red side is unblended on both

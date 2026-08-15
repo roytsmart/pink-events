@@ -2,6 +2,7 @@
 Hunting the dim bidirectional events directly, in the spectra.
 """
 
+import dataclasses
 import pathlib
 import numpy as np
 import matplotlib.pyplot as plt
@@ -32,18 +33,71 @@ __all__ = [
 band_core = 30 * u.km / u.s
 
 
+@dataclasses.dataclass
+class ScoreMaps:
+    """How much every pixel's spectrum stands above the median, per wing."""
+
+    wing_blue: na.AbstractScalar
+    """The excess in the blue wing band, less the continuum excess."""
+
+    wing_red: na.AbstractScalar
+    """The excess in the red wing band, less the continuum excess."""
+
+    noise: na.AbstractScalar
+    """The uncertainty of a band excess, from the continuum band scatter."""
+
+    core: na.AbstractScalar
+    """The line-core brightness, for deciding what is network."""
+
+    @property
+    def significance_blue(self) -> na.AbstractScalar:
+        """The blue wing excess in standard deviations of the noise."""
+        return self.wing_blue / self.noise
+
+    @property
+    def significance_red(self) -> na.AbstractScalar:
+        """The red wing excess in standard deviations of the noise."""
+        return self.wing_red / self.noise
+
+    @property
+    def score(self) -> na.AbstractScalar:
+        """
+        The bidirectional score: the lesser of the two wing excesses.
+
+        A continuum brightening scores nothing, a one-sided excursion scores
+        its quiet wing, and the blends, which live only on the blue side,
+        cannot lift a pixel on their own.
+        """
+        return np.minimum(self.wing_blue, self.wing_red)
+
+    @property
+    def significance(self) -> na.AbstractScalar:
+        """The bidirectional score in standard deviations of the noise."""
+        return self.score / self.noise
+
+    @property
+    def significance_any(self) -> na.AbstractScalar:
+        """
+        The greater wing's excess in standard deviations of the noise.
+
+        The detection statistic when one-sided flows count too: still
+        immune to continuum brightenings, which raise both wings and the
+        continuum alike, and still resistant to the blends, since a band
+        median shrugs off a narrow line.
+        """
+        return np.maximum(self.significance_blue, self.significance_red)
+
+
 def score_maps(
     obs: iris.sg.SpectrographObservation,
-) -> tuple[na.AbstractScalar, na.AbstractScalar, na.AbstractScalar]:
+) -> ScoreMaps:
     """
-    How much every pixel's spectrum stands above the median in both wings.
+    Score every pixel's spectrum against the median, one wing at a time.
 
-    Returns the score, its significance in standard deviations of the
-    continuum noise, and the line-core brightness. The score is the lesser
-    of the two wing excesses less the continuum excess, so a continuum
-    brightening scores nothing, a one-sided noise excursion scores nothing,
-    and the blends, which live only on the blue side, cannot lift a pixel
-    on their own.
+    Each wing band holds only certainly supersonic emission, the sound
+    speed plus twice the thermal speed of the ion and beyond, so that
+    nothing in it can be explained as thermal broadening of a stationary
+    line.
 
     Parameters
     ----------
@@ -75,24 +129,27 @@ def score_maps(
     where_red = (band_wing[0] < speed) & (speed < band_wing[1]) & (velocity > 0)
     where_continuum = (band_continuum[0] < velocity) & (velocity < band_continuum[1])
 
-    wing_blue = band_mean(excess, where_blue)
-    wing_red = band_mean(excess, where_red)
     continuum = band_mean(excess, where_continuum)
+    wing_blue = band_mean(excess, where_blue) - continuum
+    wing_red = band_mean(excess, where_red) - continuum
 
-    score = np.minimum(wing_blue, wing_red) - continuum
-
-    # How big the score has to be before it means anything, from the scatter
+    # How big an excess has to be before it means anything, from the scatter
     # of the one band that should hold nothing.
     noise = np.nanstd(
         np.where(where_continuum, excess - continuum, np.nan),
         axis=axis_wavelength,
     )
     num_wing = int(np.sum(where_blue).ndarray)
-    significance = score / (noise / np.sqrt(num_wing))
+    noise = noise / np.sqrt(num_wing)
 
     core = band_mean(obs.outputs, speed < band_core)
 
-    return score, significance, core
+    return ScoreMaps(
+        wing_blue=wing_blue,
+        wing_red=wing_red,
+        noise=noise,
+        core=core,
+    )
 
 
 def dim_events(
@@ -151,7 +208,10 @@ def dim_events(
 
     index_time = {axis_time: 0}
 
-    score, significance, core = score_maps(obs)
+    maps = score_maps(obs)
+    score = maps.score
+    significance = maps.significance
+    core = maps.core
 
     velocity = _velocity_centers(obs)
     median = np.nanmedian(obs.outputs, axis=(axis_time, axis_x, axis_y))
