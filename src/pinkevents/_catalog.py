@@ -36,10 +36,18 @@ def _time_rounded(time_jd: float) -> astropy.time.Time:
     return astropy.time.Time(np.round(time_jd / step) * step, format="jd")
 
 
+#: Bumped whenever the scoring upstream of the catalog changes: the cache
+#: hashes only the function below, and cannot see that `score_maps` moved
+#: under it, which once served a stale census as though nothing had
+#: happened.
+version_scoring = 3
+
+
 @memory.cache
 def _catalog(
     significance_min: float,
     separation: float,
+    version: int,
 ) -> dict[str, npt.NDArray]:
     """
     The census, as plain arrays: one row per event.
@@ -145,10 +153,13 @@ def _catalog(
 
     # The chance expectation: the same measurement at positions that were
     # not chosen for anything, so that a preference of the events can be
-    # told from a property of the raster.
+    # told from a property of the raster. Drawn from the pixels the
+    # detector was allowed to search, since a control allowed to stand
+    # where no event could be found is not the events' chance expectation.
     rng = np.random.default_rng(42)
+    searchable = maps.valid[index_time].broadcast_to(position.x.shape).ndarray
     finite = np.isfinite(position.x.ndarray) & np.isfinite(position.y.ndarray)
-    flat_valid = np.flatnonzero(finite.ravel())
+    flat_valid = np.flatnonzero((finite & searchable).ravel())
     chosen = rng.choice(flat_valid, size=500, replace=False)
 
     control = []
@@ -208,6 +219,7 @@ def catalog(
     return _catalog(
         significance_min=significance_min,
         separation=separation.to_value(u.arcsec),
+        version=version_scoring,
     )
 
 
@@ -423,7 +435,10 @@ def profiles(
                     index[axis_y] + halfwidth_y + 1,
                 ),
             }
-            profile = obs.outputs[index_time | neighborhood].mean((axis_x, axis_y))
+            profile = np.nanmean(
+                obs.outputs[index_time | neighborhood],
+                axis=(axis_x, axis_y),
+            )
             profile = u.Quantity(profile.ndarray).value
 
             ax.plot(velocity, median, color="gray", linewidth=0.8)

@@ -49,6 +49,9 @@ class ScoreMaps:
     core: na.AbstractScalar
     """The line-core brightness, for deciding what is network."""
 
+    valid: na.AbstractScalar
+    """Where the data is trustworthy enough to score at all."""
+
     @property
     def significance_blue(self) -> na.AbstractScalar:
         """The blue wing excess in standard deviations of the noise."""
@@ -149,11 +152,33 @@ def score_maps(
 
     core = band_mean(obs.outputs, speed < band_core)
 
+    # Only pixels whose whole neighborhood is really data. The data-gap
+    # columns are NaN and cannot score, but their edge pixels carry
+    # corrupted values that are finite, wild, and wide enough that a whole
+    # band of them sails past a band median: one reached forty standard
+    # deviations on nothing but the garbage beside a gap.
+    # Eight steps wide in x, because the corruption is: scanning the
+    # per-pixel scatter through a gap shows the side downstream of it
+    # elevated by a factor of eighteen two pixels out and still a factor
+    # of three at five, while the upstream side is untouched.
+    finite = np.all(np.isfinite(obs.outputs), axis=axis_wavelength)
+    order = tuple(ax for ax in finite.axes if ax not in (axis_x, axis_y))
+    order = order + (axis_x, axis_y)
+    fraction, _ = _background(
+        finite.transpose(order).ndarray.astype(float),
+        halfwidth=(8, 2),
+    )
+    valid = na.ScalarArray(fraction > 0.999, axes=order)
+
+    wing_blue = np.where(valid, wing_blue, np.nan)
+    wing_red = np.where(valid, wing_red, np.nan)
+
     return ScoreMaps(
         wing_blue=wing_blue,
         wing_red=wing_red,
         noise=noise,
         core=core,
+        valid=valid,
     )
 
 
