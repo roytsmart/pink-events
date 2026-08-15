@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pink-events"
+authors = [
+    {name = "Roy T. Smart", email = "roytsmart@gmail.com"},
+]
+description = "An investigation of the small, dim, pink events in the supergranule cell interiors of the ESIS level-4 inversions."
+readme = "readme.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "astropy",
+    "joblib",
+    "named-arrays",
+    "colorsynth",
+    "interface-region-imaging-spectrograph",
+    "euv-snapshot-imaging-spectrograph",
+    "solar-dynamics-observatory",
+    "spd-2026",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+[tool.setuptools_scm]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
