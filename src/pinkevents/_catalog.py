@@ -16,7 +16,7 @@ from ._rgb import rgb
 from ._network import network, distance_to
 from ._magnetic import flux_density
 from ._search import score_maps
-from ._deconvolve import deconvolved
+from ._deconvolve import deconvolved, null_events
 from ._overview import path_figures, _plot_image, _shade_bands
 
 __all__ = [
@@ -41,7 +41,7 @@ def _time_rounded(time_jd: float) -> astropy.time.Time:
 #: hashes only the function below, and cannot see that `score_maps` moved
 #: under it, which once served a stale census as though nothing had
 #: happened.
-version_scoring = 8
+version_scoring = 10
 
 
 @memory.cache
@@ -108,10 +108,19 @@ def _catalog(
     sig_blue_map = u.Quantity(significance_blue.ndarray).value
     sig_red_map = u.Quantity(significance_red.ndarray).value
 
-    # The false discovery rate, measured rather than assumed: the same
-    # detector walked over the wing deficits, which no real event produces,
-    # counts what noise and systematics alone put over the floor.
-    num_deficit = len(census(np.maximum(-sig_blue_map, -sig_red_map)))
+    # The false discovery rate, measured rather than assumed. For the raw
+    # bands the null is the wing deficits, which no real event produces.
+    # A positive-constrained restoration squashes the deficits without
+    # touching the speckle that fakes events, so its null is synthetic: a
+    # raster made of the median profile and each pixel's own noise, pushed
+    # through the identical machinery, holds no events by construction.
+    if sharpened:
+        num_deficit = null_events(
+            significance_min=significance_min,
+            separation=separation * u.arcsec,
+        )
+    else:
+        num_deficit = len(census(np.maximum(-sig_blue_map, -sig_red_map)))
 
     events = []
     for found in census(u.Quantity(significance.ndarray).value):
@@ -205,7 +214,7 @@ def _catalog(
 def catalog(
     significance_min: float = 7,
     separation: u.Quantity = 5 * u.arcsec,
-    sharpened: bool = False,
+    sharpened: bool = True,
 ) -> dict[str, npt.NDArray]:
     """
     Every explosive event in the raster, one row per event.
@@ -238,6 +247,7 @@ def catalog(
 def statistics(
     significance_min: float = 7,
     separation: u.Quantity = 5 * u.arcsec,
+    sharpened: bool = True,
     figsize: tuple[float, float] = (16, 8),
     dpi: float = 600,
 ) -> pathlib.Path:
@@ -265,6 +275,7 @@ def statistics(
     table = catalog(
         significance_min=significance_min,
         separation=separation,
+        sharpened=sharpened,
     )
 
     obs = raster()
@@ -348,6 +359,7 @@ def statistics(
 def profiles(
     significance_min: float = 7,
     separation: u.Quantity = 5 * u.arcsec,
+    sharpened: bool = True,
     velocity_limit: u.Quantity = 300 * u.km / u.s,
     halfwidth_x: int = 1,
     halfwidth_y: int = 2,
@@ -388,9 +400,10 @@ def profiles(
     table = catalog(
         significance_min=significance_min,
         separation=separation,
+        sharpened=sharpened,
     )
 
-    obs = raster()
+    obs = deconvolved() if sharpened else raster()
 
     axis_time = obs.axis_time
     axis_x = obs.axis_detector_x
@@ -453,7 +466,30 @@ def profiles(
             )
             profile = u.Quantity(profile.ndarray).value
 
-            _shade_bands(ax, velocity)
+            if sharpened:
+                from ._deconvolve import where_bands_sharpened
+                from ._overview import speed_sound, band_continuum
+
+                masks = where_bands_sharpened(
+                    velocity=velocity,
+                    median_sharp=median,
+                    speed_sound=speed_sound.to_value(u.km / u.s),
+                    band_continuum=tuple(band_continuum.to_value(u.km / u.s)),
+                )
+                for where, color in zip(masks, ("tab:blue", "tab:red", "gray")):
+                    ax.fill_between(
+                        velocity,
+                        0,
+                        1,
+                        where=where,
+                        transform=ax.get_xaxis_transform(),
+                        color=color,
+                        alpha=0.08,
+                        step="mid",
+                        linewidth=0,
+                    )
+            else:
+                _shade_bands(ax, velocity)
             ax.plot(velocity, median, color="gray", linewidth=0.8)
             ax.plot(velocity, profile, color="tab:red", linewidth=0.8)
             ax.axvline(0, color="black", linewidth=0.4, linestyle="dashed")

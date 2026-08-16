@@ -19,6 +19,7 @@ __all__ = [
     "deconvolution",
     "where_bands_sharpened",
     "band_noise_factor",
+    "null_events",
 ]
 
 #: The regularization of the Wiener filter, as a fraction of the kernel's
@@ -26,6 +27,11 @@ __all__ = [
 #: small enough that the median profile collapses by an order of magnitude,
 #: large enough that the quiet continuum does not ring.
 regularization = 0.03
+
+#: The number of Richardson-Lucy iterations. The iteration count is the
+#: regularization: the algorithm is semiconvergent, sharpening first and
+#: amplifying noise after, the same trade the group tunes in MART.
+iterations_rl = 20
 
 
 def where_bands_sharpened(
@@ -267,6 +273,115 @@ def band_noise_factor(
     return float(np.sqrt(variance_band / variance_sample) * np.sqrt(n))
 
 
+def _richardson_lucy(
+    spectra: npt.NDArray,
+    response: npt.NDArray,
+    axis: int,
+    num_iterations: int,
+) -> npt.NDArray:
+    """
+    Deconvolve spectra by a kernel with the Richardson-Lucy iteration.
+
+    Multiplicative and positive: the restoration can never go negative, so
+    the ringing that made the linear filter's noise floor scale with the
+    signal cannot happen. The price is nonlinearity, which puts the noise
+    beyond analysis, and semiconvergence, which makes the iteration count
+    the regularization; the deficit control is the calibration either way.
+
+    Parameters
+    ----------
+    spectra
+        The spectra to sharpen. Negative samples, which are noise, are
+        clipped: the algorithm models photon counts.
+    response
+        The kernel, normalized to unit sum.
+    axis
+        The logical position of the spectral axis of `spectra`.
+    num_iterations
+        How many multiplicative updates to run.
+    """
+    n = spectra.shape[axis]
+    length = 1 << int(np.ceil(np.log2(n + len(response))))
+
+    center = int(np.argmax(response))
+    padded = np.zeros(length)
+    padded[: len(response)] = response
+    padded = np.roll(padded, -center)
+    transfer = np.fft.rfft(padded)
+
+    spectra = np.moveaxis(spectra, axis, -1)
+    data = np.clip(spectra, 0, None)
+
+    edge_lo = data[..., :1]
+    edge_hi = data[..., ~0:]
+    pad_lo = np.broadcast_to(edge_lo, data.shape[:-1] + ((length - n) // 2,))
+    pad_hi = np.broadcast_to(
+        edge_hi, data.shape[:-1] + (length - n - pad_lo.shape[-1],)
+    )
+    data = np.concatenate([pad_lo, data, pad_hi], axis=-1)
+
+    tiny = 1e-3 * max(float(np.nanmean(data)), 1e-30)
+
+    def convolve(a: npt.NDArray, kernel_transfer: npt.NDArray) -> npt.NDArray:
+        return np.fft.irfft(
+            np.fft.rfft(a, axis=-1) * kernel_transfer, n=length, axis=-1
+        )
+
+    restored = data.copy()
+    for _ in range(num_iterations):
+        forward = convolve(restored, transfer)
+        ratio = data / np.clip(forward, tiny, None)
+        restored = restored * convolve(ratio, np.conj(transfer))
+        restored = np.clip(restored, 0, None)
+
+    restored = restored[..., pad_lo.shape[-1] : pad_lo.shape[-1] + n]
+
+    return np.moveaxis(restored, -1, axis)
+
+
+@memory.cache
+def _outputs_rl(
+    time: str,
+    window: str,
+    num_iterations: int,
+) -> npt.NDArray:
+    """
+    The despiked 1394 signal, Richardson-Lucy restored, without units.
+
+    Computed in chunks along the raster axis, since the iteration keeps
+    several copies of the padded cube alive at once.
+
+    Parameters
+    ----------
+    time
+        The time of the observation to download.
+    window
+        The name of the spectral window to load.
+    num_iterations
+        How many multiplicative updates to run.
+    """
+    obs = raster(time=time, window=window)
+    response = kernel(time=time, window=window)
+
+    axis = obs.outputs.axes.index(obs.axis_wavelength)
+    axis_x = obs.outputs.axes.index(obs.axis_detector_x)
+    values = u.Quantity(obs.outputs.ndarray).value
+
+    num_chunk = 50
+    chunks = []
+    for start in range(0, values.shape[axis_x], num_chunk):
+        piece = np.take(
+            values,
+            range(start, min(start + num_chunk, values.shape[axis_x])),
+            axis=axis_x,
+        )
+        chunks.append(
+            _richardson_lucy(piece, response, axis=axis, num_iterations=num_iterations)
+        )
+
+    return np.concatenate(chunks, axis=axis_x).astype(np.float32)
+
+
 @memory.cache
 def _outputs_deconvolved(
     time: str,
@@ -301,6 +416,8 @@ def _outputs_deconvolved(
 def deconvolved(
     time: str = time_default,
     window: str = window_default,
+    method: str = "rl",
+    num_iterations: int = iterations_rl,
 ) -> iris.sg.SpectrographObservation:
     """
     The raster with every spectrum deconvolved by the doublet kernel.
@@ -321,11 +438,18 @@ def deconvolved(
 
     obs = raster(time=time, window=window)
 
-    values = _outputs_deconvolved(
-        time=time,
-        window=window,
-        beta=regularization,
-    )
+    if method == "rl":
+        values = _outputs_rl(
+            time=time,
+            window=window,
+            num_iterations=num_iterations,
+        )
+    else:
+        values = _outputs_deconvolved(
+            time=time,
+            window=window,
+            beta=regularization,
+        )
 
     return dataclasses.replace(
         obs,
@@ -333,6 +457,145 @@ def deconvolved(
             ndarray=values.astype(float) << na.unit(obs.outputs),
             axes=obs.outputs.axes,
         ),
+    )
+
+
+@memory.cache
+def _null_events(
+    time: str,
+    window: str,
+    num_iterations: int,
+    significance_min: float,
+    separation: float,
+    seed: int,
+) -> int:
+    """
+    How many events the pipeline finds in a raster containing none.
+
+    The deficit control cannot calibrate a positive-constrained
+    restoration: positivity squashes the negative tail it counts while
+    leaving the positive tail, the speckle that fakes events, untouched,
+    so a zero deficit count says nothing. The null here is synthetic: the
+    median profile plus each pixel's own measured noise, pushed through
+    the identical restoration and census, holds no events by construction,
+    and whatever the census finds in it is the false discovery count.
+
+    Parameters
+    ----------
+    time
+        The time of the observation to download.
+    window
+        The name of the spectral window to load.
+    num_iterations
+        How many multiplicative updates the restoration runs.
+    significance_min
+        The census floor being calibrated.
+    separation
+        The de-duplication radius in arcseconds.
+    seed
+        The seed of the synthetic noise.
+    """
+    import dataclasses
+    from ._search import score_maps
+    from ._overview import band_continuum, _velocity_centers
+
+    obs = raster(time=time, window=window)
+    response = kernel(time=time, window=window)
+
+    axis = obs.axis_wavelength
+    axes = tuple(ax for ax in obs.outputs.axes if ax != axis)
+    median = np.nanmedian(obs.outputs, axis=axes)
+    median = u.Quantity(median.ndarray).value
+
+    velocity = _velocity_centers(obs).ndarray.to_value(u.km / u.s)
+    c0, c1 = band_continuum.to_value(u.km / u.s)
+    where_continuum = (c0 < velocity) & (velocity < c1)
+
+    values = u.Quantity(obs.outputs.ndarray).value
+    pos = obs.outputs.axes.index(axis)
+    sub = np.take(values, np.flatnonzero(where_continuum), axis=pos)
+    sigma = np.nanstd(sub, axis=pos, keepdims=True)
+
+    rng = np.random.default_rng(seed)
+    synthetic = median + sigma * rng.standard_normal(values.shape)
+    synthetic = np.where(np.isfinite(values), synthetic, np.nan)
+
+    pos_x = obs.outputs.axes.index(obs.axis_detector_x)
+    num_chunk = 50
+    chunks = []
+    for start in range(0, synthetic.shape[pos_x], num_chunk):
+        piece = np.take(
+            synthetic,
+            range(start, min(start + num_chunk, synthetic.shape[pos_x])),
+            axis=pos_x,
+        )
+        chunks.append(
+            _richardson_lucy(piece, response, axis=pos, num_iterations=num_iterations)
+        )
+    restored = np.concatenate(chunks, axis=pos_x)
+
+    fake = dataclasses.replace(
+        obs,
+        outputs=na.ScalarArray(
+            ndarray=restored << na.unit(obs.outputs),
+            axes=obs.outputs.axes,
+        ),
+    )
+
+    maps = score_maps(fake, sharpened=True)
+    index_time = {obs.axis_time: 0}
+    significance = u.Quantity(maps.significance_any[index_time].ndarray).value
+
+    position = obs.inputs.position[index_time].cell_centers(
+        (obs.axis_detector_x, obs.axis_detector_y)
+    )
+    px = position.x.ndarray.to_value(u.arcsec)
+    py = position.y.ndarray.to_value(u.arcsec)
+
+    order = np.argsort(-np.nan_to_num(significance), axis=None)
+    kept = []
+    for flat in order:
+        i, j = np.unravel_index(flat, significance.shape)
+        sig = significance[i, j]
+        if not np.isfinite(sig) or sig < significance_min:
+            break
+        x, y = px[i, j], py[i, j]
+        if not (np.isfinite(x) and np.isfinite(y)):
+            continue
+        if any(np.hypot(x - a, y - b) < separation for a, b in kept):
+            continue
+        kept.append((x, y))
+
+    return len(kept)
+
+
+def null_events(
+    significance_min: float = 7,
+    separation: u.Quantity = 5 * u.arcsec,
+    num_iterations: int = iterations_rl,
+    seed: int = 42,
+) -> int:
+    """
+    The false discovery count of the sharpened census, by Monte Carlo.
+
+    Parameters
+    ----------
+    significance_min
+        The census floor being calibrated.
+    separation
+        The de-duplication radius.
+    num_iterations
+        How many multiplicative updates the restoration runs.
+    seed
+        The seed of the synthetic noise.
+    """
+    return _null_events(
+        time=time_default,
+        window=window_default,
+        num_iterations=num_iterations,
+        significance_min=significance_min,
+        separation=separation.to_value(u.arcsec),
+        seed=seed,
     )
 
 
