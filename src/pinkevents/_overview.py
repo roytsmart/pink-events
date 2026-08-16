@@ -85,6 +85,79 @@ def band_wing() -> tuple[u.Quantity, u.Quantity]:
 #: sides of the band, so the blue side stays out of it.
 band_continuum = (250, 400) * (u.km / u.s)
 
+#: The velocities the blends own, kept out of every band wherever the band
+#: edges move: the Ni II line near -92 km/s and the Fe II line near
+#: -202 km/s brighten with the chromosphere, not with transition-region
+#: flows.
+bands_blend = (
+    (-105, -80) * (u.km / u.s),
+    (-215, -190) * (u.km / u.s),
+)
+
+
+def _where_bands(velocity: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Which samples belong to the blue wing, the red wing, and the continuum.
+
+    The one place the integration ranges are written down, so that the
+    detector and every figure shade and sum exactly the same samples.
+
+    Parameters
+    ----------
+    velocity
+        The Doppler velocity of each sample, in km/s.
+    """
+    band = band_wing()
+    lo = band[0].to_value(u.km / u.s)
+    hi = band[1].to_value(u.km / u.s)
+    speed = np.abs(velocity)
+
+    blended = np.zeros_like(velocity, dtype=bool)
+    for blend in bands_blend:
+        b0, b1 = blend.to_value(u.km / u.s)
+        blended |= (velocity > b0) & (velocity < b1)
+
+    where_blue = (lo < speed) & (speed < hi) & (velocity < 0) & ~blended
+    where_red = (lo < speed) & (speed < hi) & (velocity > 0)
+
+    c0, c1 = band_continuum.to_value(u.km / u.s)
+    where_continuum = (c0 < velocity) & (velocity < c1)
+
+    return where_blue, where_red, where_continuum
+
+
+def _shade_bands(ax: matplotlib.axes.Axes, velocity: np.ndarray):
+    """
+    Shade the samples each band actually integrates, holes and all.
+
+    The gaps in the shading are the blend exclusions: what the eye sees
+    shaded is exactly what the detector sums, nothing more.
+
+    Parameters
+    ----------
+    ax
+        The axes to shade.
+    velocity
+        The Doppler velocity of each sample, in km/s.
+    """
+    where_blue, where_red, where_continuum = _where_bands(velocity)
+    for where, color in (
+        (where_blue, "tab:blue"),
+        (where_red, "tab:red"),
+        (where_continuum, "gray"),
+    ):
+        ax.fill_between(
+            velocity,
+            0,
+            1,
+            where=where,
+            transform=ax.get_xaxis_transform(),
+            color=color,
+            alpha=0.08,
+            step="mid",
+            linewidth=0,
+        )
+
 
 def _velocity_centers(obs: iris.sg.SpectrographObservation) -> na.AbstractScalar:
     """The Doppler velocity at the center of each wavelength cell."""
@@ -163,20 +236,7 @@ def _plot_profile(
     """
     wing, continuum = _excess_ratio(velocity, profile, median)
 
-    band = band_wing()
-    for sign in (-1, +1):
-        ax.axvspan(
-            sign * band[0].value,
-            sign * band[1].value,
-            color="tab:blue" if sign < 0 else "tab:red",
-            alpha=0.06,
-        )
-    ax.axvspan(
-        band_continuum[0].value,
-        band_continuum[1].value,
-        color="gray",
-        alpha=0.12,
-    )
+    _shade_bands(ax, velocity.ndarray.to_value(u.km / u.s))
 
     na.plt.plot(velocity, median, ax=ax, color="gray", label="raster median")
     na.plt.plot(velocity, profile, ax=ax, color="tab:red", label="this pixel")

@@ -16,7 +16,7 @@ from ._rgb import rgb
 from ._network import network, distance_to
 from ._magnetic import flux_density
 from ._search import score_maps
-from ._overview import path_figures, _plot_image
+from ._overview import path_figures, _plot_image, _shade_bands
 
 __all__ = [
     "catalog",
@@ -449,6 +449,7 @@ def profiles(
             )
             profile = u.Quantity(profile.ndarray).value
 
+            _shade_bands(ax, velocity)
             ax.plot(velocity, median, color="gray", linewidth=0.8)
             ax.plot(velocity, profile, color="tab:red", linewidth=0.8)
             ax.axvline(0, color="black", linewidth=0.4, linestyle="dashed")

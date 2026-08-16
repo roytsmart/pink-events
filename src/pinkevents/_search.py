@@ -18,8 +18,7 @@ from ._network import network, distance_to
 from ._magnetic import flux_density
 from ._overview import (
     path_figures,
-    band_wing,
-    band_continuum,
+    _where_bands,
     _velocity_centers,
     _plot_image,
     _plot_profile,
@@ -137,17 +136,14 @@ def score_maps(
         axes = tuple(ax for ax in a.axes if ax != axis_wavelength)
         return na.ScalarArray(result, axes=axes)
 
-    band = band_wing()
-
-    # The blends do not get a vote, wherever the band edges move: the Ni II
-    # line near -92 km/s and the Fe II line near -202 km/s brighten with the
-    # chromosphere, not with transition-region flows.
-    blended = (velocity > -105 * u.km / u.s) & (velocity < -80 * u.km / u.s)
-    blended = blended | (velocity > -215 * u.km / u.s) & (velocity < -190 * u.km / u.s)
-
-    where_blue = (band[0] < speed) & (speed < band[1]) & (velocity < 0) & ~blended
-    where_red = (band[0] < speed) & (speed < band[1]) & (velocity > 0)
-    where_continuum = (band_continuum[0] < velocity) & (velocity < band_continuum[1])
+    # The bands and their blend exclusions, from the one place they are
+    # written down, so that the figures shade exactly what is summed here.
+    where_blue, where_red, where_continuum = _where_bands(
+        velocity.ndarray.to_value(u.km / u.s)
+    )
+    where_blue = na.ScalarArray(where_blue, axes=velocity.axes)
+    where_red = na.ScalarArray(where_red, axes=velocity.axes)
+    where_continuum = na.ScalarArray(where_continuum, axes=velocity.axes)
 
     continuum = band_mean(excess, where_continuum)
     wing_blue = band_mean(excess, where_blue) - continuum
