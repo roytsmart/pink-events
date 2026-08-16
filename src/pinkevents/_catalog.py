@@ -40,7 +40,7 @@ def _time_rounded(time_jd: float) -> astropy.time.Time:
 #: hashes only the function below, and cannot see that `score_maps` moved
 #: under it, which once served a stale census as though nothing had
 #: happened.
-version_scoring = 3
+version_scoring = 6
 
 
 @memory.cache
@@ -76,6 +76,8 @@ def _catalog(
     significance = maps.significance_any[index_time]
     significance_blue = maps.significance_blue[index_time]
     significance_red = maps.significance_red[index_time]
+    wing_blue = maps.wing_blue[index_time]
+    wing_red = maps.wing_red[index_time]
 
     position = obs.inputs.position[index_time].cell_centers((axis_x, axis_y))
 
@@ -119,12 +121,18 @@ def _catalog(
         jd = float(astropy.time.Time(moment).jd)
 
         # Which way the event flows: both wings clearing the floor is
-        # bidirectional, otherwise the event belongs to its stronger wing.
+        # bidirectional, otherwise the event belongs to the wing with the
+        # larger excess. The excess and not the significance, because the
+        # blend mask leaves the blue band fewer samples and so more noise:
+        # judged by significance, a perfectly symmetric event would come
+        # out a red jet.
         sig_blue = float(u.Quantity(significance_blue[index].ndarray).value)
         sig_red = float(u.Quantity(significance_red[index].ndarray).value)
+        excess_blue = float(u.Quantity(wing_blue[index].ndarray).value)
+        excess_red = float(u.Quantity(wing_red[index].ndarray).value)
         if min(sig_blue, sig_red) >= significance_min:
             direction = 0
-        elif sig_blue > sig_red:
+        elif excess_blue > excess_red:
             direction = -1
         else:
             direction = +1

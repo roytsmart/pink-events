@@ -43,8 +43,13 @@ class ScoreMaps:
     wing_red: na.AbstractScalar
     """The excess in the red wing band, less the continuum excess."""
 
-    noise: na.AbstractScalar
-    """The uncertainty of a band excess, from the continuum band scatter."""
+    noise_blue: na.AbstractScalar
+    """The uncertainty of the blue band excess. Separate from the red,
+    since masking the blends makes the blue band the smaller one, and a
+    shared figure would understate whichever wing has more samples."""
+
+    noise_red: na.AbstractScalar
+    """The uncertainty of the red band excess."""
 
     core: na.AbstractScalar
     """The line-core brightness, for deciding what is network."""
@@ -54,29 +59,23 @@ class ScoreMaps:
 
     @property
     def significance_blue(self) -> na.AbstractScalar:
-        """The blue wing excess in standard deviations of the noise."""
-        return self.wing_blue / self.noise
+        """The blue wing excess in standard deviations of its noise."""
+        return self.wing_blue / self.noise_blue
 
     @property
     def significance_red(self) -> na.AbstractScalar:
-        """The red wing excess in standard deviations of the noise."""
-        return self.wing_red / self.noise
-
-    @property
-    def score(self) -> na.AbstractScalar:
-        """
-        The bidirectional score: the lesser of the two wing excesses.
-
-        A continuum brightening scores nothing, a one-sided excursion scores
-        its quiet wing, and the blends, which live only on the blue side,
-        cannot lift a pixel on their own.
-        """
-        return np.minimum(self.wing_blue, self.wing_red)
+        """The red wing excess in standard deviations of its noise."""
+        return self.wing_red / self.noise_red
 
     @property
     def significance(self) -> na.AbstractScalar:
-        """The bidirectional score in standard deviations of the noise."""
-        return self.score / self.noise
+        """
+        The bidirectional significance: the lesser wing's, per its noise.
+
+        A continuum brightening scores nothing, a one-sided excursion scores
+        its quiet wing, and the blends never enter the bands at all.
+        """
+        return np.minimum(self.significance_blue, self.significance_red)
 
     @property
     def significance_any(self) -> na.AbstractScalar:
@@ -98,9 +97,9 @@ def score_maps(
     Score every pixel's spectrum against the median, one wing at a time.
 
     Each wing band holds only certainly supersonic emission, the sound
-    speed plus twice the thermal speed of the ion and beyond, so that
-    nothing in it can be explained as thermal broadening of a stationary
-    line.
+    speed plus the measured width of the line and beyond, so that nothing
+    in it can be explained by the broadening of a stationary profile, and
+    the blend velocities never enter the bands at all.
 
     Parameters
     ----------
@@ -118,18 +117,36 @@ def score_maps(
 
     speed = np.abs(velocity)
 
-    # Medians rather than means, so that a single bad sample in a band, and
-    # the despiked data still holds deep negative ones, cannot drag the
-    # band. A negative artifact in the continuum band of a plain pixel
-    # pulls its continuum excess down and hands it a score it did not earn.
+    # A trimmed mean rather than a median: a quarter cut from each end still
+    # shrugs off the isolated bad samples despiking leaves behind, and it is
+    # only 1.09 times noisier than the mean where the median is 1.25, which
+    # at a fixed false discovery rate is real sensitivity handed back. The
+    # band samples are taken out explicitly, since the same fixed samples
+    # belong to the band at every pixel, and sorted so that the quarters can
+    # be cut; a pixel with missing samples sorts them to the end and comes
+    # out NaN, which is what the validity mask makes of it anyway.
     def band_mean(a: na.AbstractScalar, where: na.AbstractScalar) -> na.AbstractScalar:
-        return np.nanmedian(
-            np.where(where, a, np.nan),
-            axis=axis_wavelength,
-        )
+        index = np.flatnonzero(where.ndarray)
+        pos = a.axes.index(axis_wavelength)
+        sub = np.take(a.ndarray, index, axis=pos)
+        sub = np.sort(sub, axis=pos)
+        cut = int(0.25 * len(index))
+        keep = [slice(None)] * sub.ndim
+        keep[pos] = slice(cut, len(index) - cut)
+        result = sub[tuple(keep)].mean(axis=pos)
+        axes = tuple(ax for ax in a.axes if ax != axis_wavelength)
+        return na.ScalarArray(result, axes=axes)
 
-    where_blue = (band_wing[0] < speed) & (speed < band_wing[1]) & (velocity < 0)
-    where_red = (band_wing[0] < speed) & (speed < band_wing[1]) & (velocity > 0)
+    band = band_wing()
+
+    # The blends do not get a vote, wherever the band edges move: the Ni II
+    # line near -92 km/s and the Fe II line near -202 km/s brighten with the
+    # chromosphere, not with transition-region flows.
+    blended = (velocity > -105 * u.km / u.s) & (velocity < -80 * u.km / u.s)
+    blended = blended | (velocity > -215 * u.km / u.s) & (velocity < -190 * u.km / u.s)
+
+    where_blue = (band[0] < speed) & (speed < band[1]) & (velocity < 0) & ~blended
+    where_red = (band[0] < speed) & (speed < band[1]) & (velocity > 0)
     where_continuum = (band_continuum[0] < velocity) & (velocity < band_continuum[1])
 
     continuum = band_mean(excess, where_continuum)
@@ -137,18 +154,18 @@ def score_maps(
     wing_red = band_mean(excess, where_red) - continuum
 
     # How big an excess has to be before it means anything, from the scatter
-    # of the one band that should hold nothing. The band statistic is a
-    # median, and the median of N samples is sqrt(pi/2) noisier than their
-    # mean: without that factor every significance in the census was a
-    # quarter optimistic, and at five sigma over four hundred thousand
-    # pixels a quarter is the difference between a census and a noise
-    # catalog, which a deficit control made plain.
+    # of the one band that should hold nothing. The 1.09 is what a quarter
+    # trimmed mean of this many Gaussian samples costs against the plain
+    # mean, measured by Monte Carlo; the median it replaced cost 1.25, and
+    # leaving either factor out once turned the census into a noise catalog,
+    # which a deficit control made plain.
     noise = np.nanstd(
         np.where(where_continuum, excess - continuum, np.nan),
         axis=axis_wavelength,
     )
-    num_wing = int(np.sum(where_blue).ndarray)
-    noise = np.sqrt(np.pi / 2) * noise / np.sqrt(num_wing)
+    # Per wing, since the blend mask makes the blue band the smaller one.
+    noise_blue = 1.09 * noise / np.sqrt(int(np.sum(where_blue).ndarray))
+    noise_red = 1.09 * noise / np.sqrt(int(np.sum(where_red).ndarray))
 
     core = band_mean(obs.outputs, speed < band_core)
 
@@ -176,7 +193,8 @@ def score_maps(
     return ScoreMaps(
         wing_blue=wing_blue,
         wing_red=wing_red,
-        noise=noise,
+        noise_blue=noise_blue,
+        noise_red=noise_red,
         core=core,
         valid=valid,
     )
@@ -239,8 +257,8 @@ def dim_events(
     index_time = {axis_time: 0}
 
     maps = score_maps(obs)
-    score = maps.score
     significance = maps.significance
+    score = significance
     core = maps.core
 
     velocity = _velocity_centers(obs)

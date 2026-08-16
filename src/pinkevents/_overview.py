@@ -2,6 +2,7 @@
 The one plot the first question needs.
 """
 
+import functools
 import pathlib
 import numpy as np
 import matplotlib.pyplot as plt
@@ -42,21 +43,42 @@ speed_sound = np.sqrt(
     (5 / 3) * astropy.constants.k_B * temperature_si_iv / (0.6 * astropy.constants.m_p)
 ).to(u.km / u.s)
 
-#: The one-dimensional thermal speed of the Si IV ion at its formation
-#: temperature. Silicon is heavy, so this is small, which is what makes
-#: Si IV a good velocity diagnostic.
-speed_thermal = np.sqrt(
-    astropy.constants.k_B * temperature_si_iv / (28.085 * astropy.constants.u)
-).to(u.km / u.s)
 
-#: The velocity band treated as the line wings: from the slowest emission
-#: that is certainly supersonic, the sound speed plus twice the thermal
-#: speed of the ion, out to the classic explosive-event jet scale. Everything
-#: in the band is bulk flow beyond any thermal excuse.
-band_wing = (
-    speed_sound + 2 * speed_thermal,
-    150 * u.km / u.s,
-)
+@functools.cache
+def band_wing() -> tuple[u.Quantity, u.Quantity]:
+    """
+    The velocity band treated as the line wings.
+
+    From the slowest emission that is certainly a supersonic flow, the sound
+    speed plus the measured full width at half maximum of the raster's
+    median profile, out to the classic explosive-event jet scale. The width
+    is measured rather than modeled, so it carries the thermal, nonthermal,
+    and instrumental broadening of the actual line, and everything past the
+    inner edge is beyond what a stationary profile of that width reaches.
+    """
+    obs = raster()
+
+    axis = (obs.axis_time, obs.axis_detector_x, obs.axis_detector_y)
+    median = u.Quantity(np.nanmedian(obs.outputs, axis=axis).ndarray).value
+
+    velocity = _velocity_centers(obs).ndarray.to_value(u.km / u.s)
+
+    where = (band_continuum[0].value < velocity) & (velocity < band_continuum[1].value)
+    continuum = np.median(median[where])
+    half = continuum + (np.nanmax(median) - continuum) / 2
+
+    above = np.flatnonzero(median > half)
+    i0, i1 = above[0], above[-1]
+    v_lo = np.interp(
+        half, [median[i0 - 1], median[i0]], [velocity[i0 - 1], velocity[i0]]
+    )
+    v_hi = np.interp(
+        half, [median[i1 + 1], median[i1]], [velocity[i1 + 1], velocity[i1]]
+    )
+    width = (v_hi - v_lo) * (u.km / u.s)
+
+    return (speed_sound + width, 150 * u.km / u.s)
+
 
 #: The velocity band treated as pure continuum, beyond the wings and the
 #: blends near -200 and -100 km/s. Only the red side is unblended on both
@@ -98,7 +120,8 @@ def _excess_ratio(
     excess = profile - median
     speed = np.abs(velocity)
 
-    where_wing = (band_wing[0] < speed) & (speed < band_wing[1])
+    band = band_wing()
+    where_wing = (band[0] < speed) & (speed < band[1])
     where_continuum = (band_continuum[0] < velocity) & (velocity < band_continuum[1])
 
     wing = excess[where_wing].mean().ndarray
@@ -140,10 +163,11 @@ def _plot_profile(
     """
     wing, continuum = _excess_ratio(velocity, profile, median)
 
+    band = band_wing()
     for sign in (-1, +1):
         ax.axvspan(
-            sign * band_wing[0].value,
-            sign * band_wing[1].value,
+            sign * band[0].value,
+            sign * band[1].value,
             color="tab:blue" if sign < 0 else "tab:red",
             alpha=0.06,
         )
