@@ -91,6 +91,7 @@ class ScoreMaps:
 
 def score_maps(
     obs: iris.sg.SpectrographObservation,
+    sharpened: bool = False,
 ) -> ScoreMaps:
     """
     Score every pixel's spectrum against the median, one wing at a time.
@@ -103,7 +104,13 @@ def score_maps(
     Parameters
     ----------
     obs
-        The observation to score, as returned by :func:`pinkevents.raster`.
+        The observation to score, as returned by :func:`pinkevents.raster`
+        or :func:`pinkevents.deconvolved`.
+    sharpened
+        Whether the observation has been deconvolved: the bands are then
+        measured off the deconvolved median, starting past the ringing and
+        no earlier than the sound speed, with the blend exclusions shrunk
+        to the sharpened blends.
     """
     axis_time = obs.axis_time
     axis_wavelength = obs.axis_wavelength
@@ -138,9 +145,19 @@ def score_maps(
 
     # The bands and their blend exclusions, from the one place they are
     # written down, so that the figures shade exactly what is summed here.
-    where_blue, where_red, where_continuum = _where_bands(
-        velocity.ndarray.to_value(u.km / u.s)
-    )
+    velocity_kms = velocity.ndarray.to_value(u.km / u.s)
+    if sharpened:
+        from ._deconvolve import where_bands_sharpened
+        from ._overview import speed_sound, band_continuum
+
+        where_blue, where_red, where_continuum = where_bands_sharpened(
+            velocity=velocity_kms,
+            median_sharp=u.Quantity(median.ndarray).value,
+            speed_sound=speed_sound.to_value(u.km / u.s),
+            band_continuum=tuple(band_continuum.to_value(u.km / u.s)),
+        )
+    else:
+        where_blue, where_red, where_continuum = _where_bands(velocity_kms)
     where_blue = na.ScalarArray(where_blue, axes=velocity.axes)
     where_red = na.ScalarArray(where_red, axes=velocity.axes)
     where_continuum = na.ScalarArray(where_continuum, axes=velocity.axes)

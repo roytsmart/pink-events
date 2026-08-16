@@ -11,6 +11,7 @@ from ._search import dim_events
 from ._network import network, distance_to
 from ._magnetic import flux_density
 from ._catalog import catalog, statistics, profiles
+from ._deconvolve import kernel, deconvolved, deconvolution
 
 __all__ = [
     "raster",
@@ -26,4 +27,7 @@ __all__ = [
     "catalog",
     "statistics",
     "profiles",
+    "kernel",
+    "deconvolved",
+    "deconvolution",
 ]

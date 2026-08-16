@@ -16,6 +16,7 @@ from ._rgb import rgb
 from ._network import network, distance_to
 from ._magnetic import flux_density
 from ._search import score_maps
+from ._deconvolve import deconvolved
 from ._overview import path_figures, _plot_image, _shade_bands
 
 __all__ = [
@@ -40,7 +41,7 @@ def _time_rounded(time_jd: float) -> astropy.time.Time:
 #: hashes only the function below, and cannot see that `score_maps` moved
 #: under it, which once served a stale census as though nothing had
 #: happened.
-version_scoring = 6
+version_scoring = 7
 
 
 @memory.cache
@@ -48,6 +49,7 @@ def _catalog(
     significance_min: float,
     separation: float,
     version: int,
+    sharpened: bool,
 ) -> dict[str, npt.NDArray]:
     """
     The census, as plain arrays: one row per event.
@@ -64,7 +66,7 @@ def _catalog(
         The de-duplication radius in arcseconds: a detection this close to
         a stronger one is the same event.
     """
-    obs = raster()
+    obs = deconvolved() if sharpened else raster()
 
     axis_time = obs.axis_time
     axis_x = obs.axis_detector_x
@@ -72,7 +74,7 @@ def _catalog(
 
     index_time = {axis_time: 0}
 
-    maps = score_maps(obs)
+    maps = score_maps(obs, sharpened=sharpened)
     significance = maps.significance_any[index_time]
     significance_blue = maps.significance_blue[index_time]
     significance_red = maps.significance_red[index_time]
@@ -203,6 +205,7 @@ def _catalog(
 def catalog(
     significance_min: float = 7,
     separation: u.Quantity = 5 * u.arcsec,
+    sharpened: bool = True,
 ) -> dict[str, npt.NDArray]:
     """
     Every explosive event in the raster, one row per event.
@@ -228,6 +231,7 @@ def catalog(
         significance_min=significance_min,
         separation=separation.to_value(u.arcsec),
         version=version_scoring,
+        sharpened=sharpened,
     )
 
 
