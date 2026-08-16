@@ -17,6 +17,7 @@ from ._mgii import response_mgii
 from ._cii import response_cii
 from ._response import response, line_list
 from ._sizes import sizes
+from ._energy import energies
 
 __all__ = [
     "raster",
@@ -42,4 +43,5 @@ __all__ = [
     "response",
     "line_list",
     "sizes",
+    "energies",
 ]
