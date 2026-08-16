@@ -18,6 +18,7 @@ __all__ = [
     "deconvolved",
     "deconvolution",
     "where_bands_sharpened",
+    "band_noise_factor",
 ]
 
 #: The regularization of the Wiener filter, as a fraction of the kernel's
@@ -120,12 +121,24 @@ def _kernel(
     num_edge = 10
     profile = profile - (profile[:num_edge].mean() + profile[-num_edge:].mean()) / 2
     profile = np.clip(profile, 0, None)
-    profile = profile / profile.sum()
 
     wavelength = obs.inputs.wavelength
     wavelength = wavelength[{ax: 0 for ax in wavelength.shape if ax != axis}]
     wavelength = wavelength.ndarray.to_value(u.AA)
     wavelength = (wavelength[:~0] + wavelength[1:]) / 2
+
+    # Only the core belongs in the kernel. The 1403 median carries faint
+    # satellite bumps far from its line, and deconvolution inverts the
+    # kernel: a satellite at a velocity throws a ghost at the opposite
+    # velocity into every spectrum, scaled by the core, which handed every
+    # bright pixel a phantom blue wing and the census three hundred false
+    # jets before the deficit control caught it.
+    from ._observations import wavelength_partner
+
+    rest = wavelength_partner.to_value(u.AA)
+    velocity = (wavelength - rest) / rest * 299792.458
+    profile = np.where(np.abs(velocity) < 60, profile, 0)
+    profile = profile / profile.sum()
 
     return {"kernel": profile, "wavelength": wavelength}
 
@@ -198,6 +211,60 @@ def _wiener(
     sharpened = sharpened[..., pad_lo.shape[-1] : pad_lo.shape[-1] + n]
 
     return np.moveaxis(sharpened, -1, axis)
+
+
+def band_noise_factor(
+    where: npt.NDArray,
+    time: str = time_default,
+    window: str = window_default,
+) -> float:
+    """
+    How much more the correlated noise costs a band mean than white noise.
+
+    The Wiener filter correlates neighboring samples over roughly the
+    kernel width, so a band of N samples holds fewer than N independent
+    ones, and the uncorrected significance once flooded the census with
+    nominal detections that a deficit control showed to be almost entirely
+    noise. For a linear filter the correction is exact: the variance of the
+    band mean is the double sum of the filter's autocorrelation over the
+    band's sample pairs, against the single-sample variance the measured
+    noise already includes.
+
+    Parameters
+    ----------
+    where
+        The band membership of each sample.
+    time
+        The time of the observation to download.
+    window
+        The name of the spectral window to load.
+    """
+    response = kernel(time=time, window=window)
+
+    length = 1 << int(np.ceil(np.log2(len(where) + len(response))))
+    center = int(np.argmax(response))
+    padded = np.zeros(length)
+    padded[: len(response)] = response
+    padded = np.roll(padded, -center)
+    transfer = np.fft.rfft(padded)
+    power = np.abs(transfer) ** 2
+    factor = np.conj(transfer) / (power + regularization * power.max())
+
+    impulse = np.fft.irfft(factor, n=length)
+    autocorr = np.fft.irfft(np.abs(np.fft.rfft(impulse)) ** 2, n=length)
+
+    index = np.flatnonzero(where)
+    total = 0.0
+    for i in index:
+        for j in index:
+            total += autocorr[abs(i - j) % length]
+
+    n = len(index)
+    variance_band = total / n**2
+    variance_sample = autocorr[0]
+
+    # Against the white-noise assumption sigma / sqrt(n) the code makes.
+    return float(np.sqrt(variance_band / variance_sample) * np.sqrt(n))
 
 
 @memory.cache

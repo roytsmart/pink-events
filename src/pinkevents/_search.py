@@ -147,7 +147,7 @@ def score_maps(
     # written down, so that the figures shade exactly what is summed here.
     velocity_kms = velocity.ndarray.to_value(u.km / u.s)
     if sharpened:
-        from ._deconvolve import where_bands_sharpened
+        from ._deconvolve import where_bands_sharpened, band_noise_factor
         from ._overview import speed_sound, band_continuum
 
         where_blue, where_red, where_continuum = where_bands_sharpened(
@@ -179,6 +179,13 @@ def score_maps(
     # Per wing, since the blend mask makes the blue band the smaller one.
     noise_blue = 1.09 * noise / np.sqrt(int(np.sum(where_blue).ndarray))
     noise_red = 1.09 * noise / np.sqrt(int(np.sum(where_red).ndarray))
+
+    if sharpened:
+        # The filter correlates the samples, so a band holds fewer
+        # independent ones than it has members: the exact price for each
+        # band, from the filter's autocorrelation.
+        noise_blue = noise_blue * band_noise_factor(where_blue.ndarray)
+        noise_red = noise_red * band_noise_factor(where_red.ndarray)
 
     core = band_mean(obs.outputs, speed < band_core)
 

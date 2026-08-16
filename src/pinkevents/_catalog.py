@@ -41,7 +41,7 @@ def _time_rounded(time_jd: float) -> astropy.time.Time:
 #: hashes only the function below, and cannot see that `score_maps` moved
 #: under it, which once served a stale census as though nothing had
 #: happened.
-version_scoring = 7
+version_scoring = 8
 
 
 @memory.cache
@@ -205,7 +205,7 @@ def _catalog(
 def catalog(
     significance_min: float = 7,
     separation: u.Quantity = 5 * u.arcsec,
-    sharpened: bool = True,
+    sharpened: bool = False,
 ) -> dict[str, npt.NDArray]:
     """
     Every explosive event in the raster, one row per event.
