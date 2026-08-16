@@ -14,6 +14,7 @@ from ._catalog import catalog, statistics, profiles
 from ._deconvolve import kernel, deconvolved, deconvolution
 from ._averages import average_profile, average_ee
 from ._mgii import response_mgii
+from ._cii import response_cii
 
 __all__ = [
     "raster",
@@ -35,4 +36,5 @@ __all__ = [
     "average_profile",
     "average_ee",
     "response_mgii",
+    "response_cii",
 ]
