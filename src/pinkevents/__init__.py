@@ -12,6 +12,8 @@ from ._network import network, distance_to
 from ._magnetic import flux_density
 from ._catalog import catalog, statistics, profiles
 from ._deconvolve import kernel, deconvolved, deconvolution
+from ._averages import average_profile, average_ee
+from ._mgii import response_mgii
 
 __all__ = [
     "raster",
@@ -30,4 +32,7 @@ __all__ = [
     "kernel",
     "deconvolved",
     "deconvolution",
+    "average_profile",
+    "average_ee",
+    "response_mgii",
 ]
