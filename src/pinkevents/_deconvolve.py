@@ -466,7 +466,7 @@ def _null_events(
     window: str,
     num_iterations: int,
     significance_min: float,
-    separation: float,
+    significance_low: float,
     seed: int,
 ) -> int:
     """
@@ -489,9 +489,9 @@ def _null_events(
     num_iterations
         How many multiplicative updates the restoration runs.
     significance_min
-        The census floor being calibrated.
-    separation
-        The de-duplication radius in arcseconds.
+        The seed floor being calibrated.
+    significance_low
+        The extension threshold of the patches.
     seed
         The seed of the synthetic noise.
     """
@@ -552,26 +552,23 @@ def _null_events(
     px = position.x.ndarray.to_value(u.arcsec)
     py = position.y.ndarray.to_value(u.arcsec)
 
-    order = np.argsort(-np.nan_to_num(significance), axis=None)
-    kept = []
-    for flat in order:
-        i, j = np.unravel_index(flat, significance.shape)
-        sig = significance[i, j]
-        if not np.isfinite(sig) or sig < significance_min:
-            break
-        x, y = px[i, j], py[i, j]
-        if not (np.isfinite(x) and np.isfinite(y)):
-            continue
-        if any(np.hypot(x - a, y - b) < separation for a, b in kept):
-            continue
-        kept.append((x, y))
+    from ._search import components
 
-    return len(kept)
+    count = 0
+    for patch in components(significance, significance_low):
+        rows, cols = patch[:, 0], patch[:, 1]
+        sig = float(np.nanmax(significance[rows, cols]))
+        x = px[rows[0], cols[0]]
+        y = py[rows[0], cols[0]]
+        if sig >= significance_min and np.isfinite(x) and np.isfinite(y):
+            count += 1
+
+    return count
 
 
 def null_events(
     significance_min: float = 7,
-    separation: u.Quantity = 5 * u.arcsec,
+    significance_low: float = 4,
     num_iterations: int = iterations_rl,
     seed: int = 42,
 ) -> int:
@@ -581,9 +578,9 @@ def null_events(
     Parameters
     ----------
     significance_min
-        The census floor being calibrated.
-    separation
-        The de-duplication radius.
+        The seed floor being calibrated.
+    significance_low
+        The extension threshold of the patches.
     num_iterations
         How many multiplicative updates the restoration runs.
     seed
@@ -594,7 +591,7 @@ def null_events(
         window=window_default,
         num_iterations=num_iterations,
         significance_min=significance_min,
-        separation=separation.to_value(u.arcsec),
+        significance_low=significance_low,
         seed=seed,
     )
 

@@ -15,7 +15,7 @@ from ._observations import raster
 from ._rgb import rgb
 from ._network import network, distance_to
 from ._magnetic import flux_density
-from ._search import score_maps
+from ._search import score_maps, components
 from ._deconvolve import deconvolved, null_events
 from ._overview import path_figures, _plot_image, _shade_bands
 
@@ -41,13 +41,13 @@ def _time_rounded(time_jd: float) -> astropy.time.Time:
 #: hashes only the function below, and cannot see that `score_maps` moved
 #: under it, which once served a stale census as though nothing had
 #: happened.
-version_scoring = 10
+version_scoring = 11
 
 
 @memory.cache
 def _catalog(
     significance_min: float,
-    separation: float,
+    significance_low: float,
     version: int,
     sharpened: bool,
 ) -> dict[str, npt.NDArray]:
@@ -60,11 +60,11 @@ def _catalog(
     Parameters
     ----------
     significance_min
-        The smallest score, in standard deviations of the continuum noise,
-        counted as an event.
-    separation
-        The de-duplication radius in arcseconds: a detection this close to
-        a stronger one is the same event.
+        The seed floor: the significance at least one pixel of a patch
+        must reach for the patch to count as an event.
+    significance_low
+        The extension threshold: the significance at which pixels join a
+        patch, which is where the footprints are measured.
     """
     obs = deconvolved() if sharpened else raster()
 
@@ -85,24 +85,50 @@ def _catalog(
 
     net = network()
 
+    px = position.x.ndarray.to_value(u.arcsec)
+    py = position.y.ndarray.to_value(u.arcsec)
+
     def census(sig_map: np.ndarray) -> list[dict]:
-        """The greedy champion walk, on whatever significance map."""
-        order = np.argsort(-np.nan_to_num(sig_map), axis=None)
+        """
+        Group the map into events: every connected patch with a real seed.
+
+        Pixels join a patch at the extension threshold, but a patch only
+        counts as an event if it holds at least one pixel at the seed
+        floor: a single threshold would split one event into fragments
+        wherever its outskirts dip below the floor, while the seeds keep
+        the count calibrated. Each event is its patch, and its position is
+        its most significant pixel.
+        """
+        low = components(sig_map, significance_low)
         kept = []
-        for flat in order:
-            index_nd = np.unravel_index(flat, sig_map.shape)
+        for patch in low:
+            rows, cols = patch[:, 0], patch[:, 1]
+            values = sig_map[rows, cols]
+            best = int(np.argmax(values))
+            sig = float(values[best])
+            if sig < significance_min:
+                continue
+            index_nd = (int(rows[best]), int(cols[best]))
             index = {ax: int(i) for ax, i in zip(significance.axes, index_nd)}
-            sig = float(sig_map[index_nd])
-            if not np.isfinite(sig) or sig < significance_min:
-                break
-            here = position[index]
-            x = float(here.x.ndarray.to_value(u.arcsec))
-            y = float(here.y.ndarray.to_value(u.arcsec))
+            x = float(px[index_nd])
+            y = float(py[index_nd])
             if not (np.isfinite(x) and np.isfinite(y)):
                 continue
-            if any(np.hypot(x - e["x"], y - e["y"]) < separation for e in kept):
-                continue
-            kept.append({"x": x, "y": y, "sig": sig, "index": index})
+            kept.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "sig": sig,
+                    "index": index,
+                    "num_pixels": len(patch),
+                    "extent_x": float(
+                        np.nanmax(px[rows, cols]) - np.nanmin(px[rows, cols])
+                    ),
+                    "extent_y": float(
+                        np.nanmax(py[rows, cols]) - np.nanmin(py[rows, cols])
+                    ),
+                }
+            )
         return kept
 
     sig_blue_map = u.Quantity(significance_blue.ndarray).value
@@ -117,7 +143,7 @@ def _catalog(
     if sharpened:
         num_deficit = null_events(
             significance_min=significance_min,
-            separation=separation * u.arcsec,
+            significance_low=significance_low,
         )
     else:
         num_deficit = len(census(np.maximum(-sig_blue_map, -sig_red_map)))
@@ -158,6 +184,9 @@ def _catalog(
                 "direction": direction,
                 "jd": jd,
                 "index_x": index[axis_x],
+                "num_pixels": found["num_pixels"],
+                "extent_x": found["extent_x"],
+                "extent_y": found["extent_y"],
             }
         )
 
@@ -195,8 +224,16 @@ def _catalog(
         field, d = sample(x, y, jd)
         control.append({"x": x, "y": y, "field": field, "d_network": d})
 
+    # the area of one pixel, for turning footprints into arcseconds squared
+    scale_x = np.abs(np.nanmean(np.diff(px, axis=0)))
+    scale_y = np.abs(np.nanmean(np.diff(py, axis=1)))
+
     return {
         "num_deficit": np.array(num_deficit),
+        "num_pixels": np.array([e["num_pixels"] for e in events]),
+        "area": np.array([e["num_pixels"] * scale_x * scale_y for e in events]),
+        "extent_x": np.array([e["extent_x"] + scale_x for e in events]),
+        "extent_y": np.array([e["extent_y"] + scale_y for e in events]),
         "x": np.array([e["x"] for e in events]),
         "y": np.array([e["y"] for e in events]),
         "sig": np.array([e["sig"] for e in events]),
@@ -213,7 +250,7 @@ def _catalog(
 
 def catalog(
     significance_min: float = 7,
-    separation: u.Quantity = 5 * u.arcsec,
+    significance_low: float = 4,
     sharpened: bool = True,
 ) -> dict[str, npt.NDArray]:
     """
@@ -233,12 +270,10 @@ def catalog(
     significance_min
         The smallest score, in standard deviations of the continuum noise,
         counted as an event.
-    separation
-        The de-duplication radius.
     """
     return _catalog(
         significance_min=significance_min,
-        separation=separation.to_value(u.arcsec),
+        significance_low=significance_low,
         version=version_scoring,
         sharpened=sharpened,
     )
@@ -246,7 +281,7 @@ def catalog(
 
 def statistics(
     significance_min: float = 7,
-    separation: u.Quantity = 5 * u.arcsec,
+    significance_low: float = 4,
     sharpened: bool = True,
     figsize: tuple[float, float] = (16, 8),
     dpi: float = 600,
@@ -265,8 +300,6 @@ def statistics(
     significance_min
         The smallest score, in standard deviations of the continuum noise,
         counted as an event.
-    separation
-        The de-duplication radius.
     figsize
         The width and height of the figure in inches.
     dpi
@@ -274,7 +307,7 @@ def statistics(
     """
     table = catalog(
         significance_min=significance_min,
-        separation=separation,
+        significance_low=significance_low,
         sharpened=sharpened,
     )
 
@@ -358,7 +391,7 @@ def statistics(
 
 def profiles(
     significance_min: float = 7,
-    separation: u.Quantity = 5 * u.arcsec,
+    significance_low: float = 4,
     sharpened: bool = True,
     velocity_limit: u.Quantity = 300 * u.km / u.s,
     halfwidth_x: int = 1,
@@ -380,8 +413,6 @@ def profiles(
     significance_min
         The smallest score, in standard deviations of the continuum noise,
         counted as an event.
-    separation
-        The de-duplication radius.
     velocity_limit
         The Doppler velocity range of the panels.
     halfwidth_x
@@ -399,7 +430,7 @@ def profiles(
 
     table = catalog(
         significance_min=significance_min,
-        separation=separation,
+        significance_low=significance_low,
         sharpened=sharpened,
     )
 

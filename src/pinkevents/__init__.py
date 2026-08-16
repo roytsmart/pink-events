@@ -16,6 +16,7 @@ from ._averages import average_profile, average_ee
 from ._mgii import response_mgii
 from ._cii import response_cii
 from ._response import response, line_list
+from ._sizes import sizes
 
 __all__ = [
     "raster",
@@ -40,4 +41,5 @@ __all__ = [
     "response_cii",
     "response",
     "line_list",
+    "sizes",
 ]

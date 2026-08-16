@@ -26,7 +26,53 @@ from ._overview import (
 
 __all__ = [
     "dim_events",
+    "components",
 ]
+
+
+def components(a, threshold):
+    """
+    The connected patches of a map above a threshold, eight-connected.
+
+    Small and simple on purpose: the patches above any sensible threshold
+    hold a few thousand pixels of the raster's half million, so a plain
+    flood fill is instant and brings no dependencies.
+
+    Parameters
+    ----------
+    a
+        The map to segment.
+    threshold
+        The value a pixel must reach to belong to a patch.
+    """
+    import numpy as np
+
+    mask = np.nan_to_num(a) >= threshold
+    visited = np.zeros_like(mask, dtype=bool)
+    out = []
+    for i, j in np.argwhere(mask):
+        if visited[i, j]:
+            continue
+        visited[i, j] = True
+        stack = [(i, j)]
+        patch = []
+        while stack:
+            row, col = stack.pop()
+            patch.append((row, col))
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    r, c = row + dr, col + dc
+                    if (
+                        0 <= r < mask.shape[0]
+                        and 0 <= c < mask.shape[1]
+                        and mask[r, c]
+                        and not visited[r, c]
+                    ):
+                        visited[r, c] = True
+                        stack.append((r, c))
+        out.append(np.array(patch))
+    return out
+
 
 #: The velocity band treated as the line core.
 band_core = 30 * u.km / u.s
